@@ -2,6 +2,8 @@
 #
 # attack the test server and try to make it fall over
 #
+# Requires the library to have been built with cmake .. -DCMAKE_BUILD_TYPE=DEBUG
+
 SERVER=127.0.0.1
 PORT=7681
 LOG=/tmp/lwslog
@@ -105,7 +107,7 @@ function check {
 
 rm -rf $LOG
 killall libwebsockets-test-server 2>/dev/null
-libwebsockets-test-server -d127 2>> $LOG &
+libwebsockets-test-server -d1023 2>> $LOG &
 CPID=$!
 
 echo "Started server on PID $CPID"
@@ -775,6 +777,19 @@ fi
 
 echo
 echo "--- survived OK ---"
+kill -2 $CPID
+
+# coverage...
+# run the test client against mirror for one period and exit
+killall libwebsockets-test-server 2>/dev/null
+libwebsockets-test-server -s 2>> $LOG &
+CPID=$!
+sleep 1s
+libwebsockets-test-client 127.0.0.1 -s -O
+
+# https://github.com/curl/curl/issues/1587
+curl -v -F text=hello -F send=SEND -F upload=@../README.md https://127.0.0.1:7681/formtest -k
+
 kill -2 $CPID
 
 exit 0

@@ -22,6 +22,8 @@
 #include <string.h>
 #include <getopt.h>
 #ifndef WIN32
+#include <stdlib.h>
+#include <string.h>
 #include <syslog.h>
 #endif
 
@@ -365,7 +367,7 @@ int main(int argc, char **argv)
 			use_ssl = 1;
 			break;
 		case 'S':
-#if defined(LWS_OPENSSL_SUPPORT)
+#if defined(LWS_OPENSSL_SUPPORT) && !defined(LWS_WITH_MBEDTLS)
 			info.ssl_info_event_mask |= SSL_CB_ALERT;
 #endif
 			break;

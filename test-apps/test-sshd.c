@@ -483,7 +483,7 @@ ssh_ops_child_process_io(void *_priv, struct lws *wsi,
 				n = bytes / 2;
 			else
 				n = 1;
-			if (n > sizeof(buf))
+			if (n > (int)sizeof(buf))
 				n = sizeof(buf);
 
 			if (!n)
@@ -513,7 +513,7 @@ ssh_ops_child_process_io(void *_priv, struct lws *wsi,
 				*p++ = *d++;
 			}
 			n = (void *)p - rp;
-			if (n < bytes && priv->insert_lf) {
+			if (n < (int)bytes && priv->insert_lf) {
 				priv->insert_lf = 0;
 				*p++ = 0x0d;
 				n++;
@@ -545,7 +545,7 @@ ssh_ops_child_process_terminated(void *priv, struct lws *wsi)
 }
 
 static int
-ssh_ops_exec(void *_priv, struct lws *wsi, const char *command)
+ssh_ops_exec(void *_priv, struct lws *wsi, const char *command, lws_ssh_finish_exec finish, void *finish_handle)
 {
 	lwsl_notice("%s: EXEC %s\n", __func__, command);
 
@@ -554,7 +554,7 @@ ssh_ops_exec(void *_priv, struct lws *wsi, const char *command)
 }
 
 static int
-ssh_ops_shell(void *_priv, struct lws *wsi)
+ssh_ops_shell(void *_priv, struct lws *wsi, lws_ssh_finish_exec finish, void *finish_handle)
 {
 	struct sshd_instance_priv *priv = _priv;
 	const char *cmd[] = {
@@ -614,7 +614,7 @@ static const struct lws_ssh_ops ssh_ops = {
 	.banner				= ssh_ops_banner,
 	.disconnect_reason		= ssh_ops_disconnect_reason,
 	.server_string			= "SSH-2.0-Libwebsockets",
-	.api_version			= 1,
+	.api_version			= 2,
 };
 
 /*

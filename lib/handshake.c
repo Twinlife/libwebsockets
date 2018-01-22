@@ -71,34 +71,63 @@ lws_read(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 	case LWSS_HTTP2_AWAIT_CLIENT_PREFACE:
 	case LWSS_HTTP2_ESTABLISHED_PRE_SETTINGS:
 	case LWSS_HTTP2_ESTABLISHED:
-		n = 0;
-		//lwsl_debug("%s: starting new block of %d\n", __func__, (int)len);
 		/*
 		 * wsi here is always the network connection wsi, not a stream
-		 * wsi.
+		 * wsi.  Once we unpicked the framing we will find the right
+		 * swsi and make it the target of the frame.
+		 *
+		 * If it's ws over h2, the nwsi will get us here to do the h2
+		 * processing, and that will call us back with the swsi +
+		 * ESTABLISHED state for the inner payload, handled in a later
+		 * case.
 		 */
-		while (n < len) {
+		while (len) {
 			/*
 			 * we were accepting input but now we stopped doing so
 			 */
 			if (lws_is_flowcontrolled(wsi)) {
-				lws_rxflow_cache(wsi, buf, n, len);
+				lws_rxflow_cache(wsi, buf, 0, (int)len);
 
 				return 1;
 			}
 
-			/* account for what we're using in rxflow buffer */
-			if (wsi->rxflow_buffer) {
-				wsi->rxflow_pos++;
-				assert(wsi->rxflow_pos <= wsi->rxflow_len);
-			}
+			/*
+			 * lws_h2_parser() may send something; when it gets the
+			 * whole frame, it will want to perform some action
+			 * involving a reply.  But we may be in a partial send
+			 * situation on the network wsi...
+			 *
+			 * Even though we may be in a partial send and unable to
+			 * send anything new, we still have to parse the network
+			 * wsi in order to gain tx credit to send, which is
+			 * potentially necessary to clear the old partial send.
+			 *
+			 * ALL network wsi-specific frames are sent by PPS
+			 * already, these are sent as a priority on the writable
+			 * handler, and so respect partial sends.  The only
+			 * problem is when a stream wsi wants to send an, eg,
+			 * reply headers frame in response to the parsing
+			 * we will do now... the *stream wsi* must stall in a
+			 * different state until it is able to do so from a
+			 * priority on the WRITABLE callback, same way that
+			 * file transfers operate.
+			 */
 
-			if (lws_h2_parser(wsi, buf[n++])) {
+			if (lws_h2_parser(wsi, buf, len, &body_chunk_len)) {
 				lwsl_debug("%s: http2_parser bailed\n", __func__);
 				goto bail;
 			}
+
+			/* account for what we're using in rxflow buffer */
+			if (wsi->rxflow_buffer) {
+				wsi->rxflow_pos += (int)body_chunk_len;
+				assert(wsi->rxflow_pos <= wsi->rxflow_len);
+			}
+
+			buf += body_chunk_len;
+			len -= body_chunk_len;
 		}
-		lwsl_debug("%s: used up block of %d\n", __func__, (int)len);
+		lwsl_debug("%s: used up block\n", __func__);
 		break;
 #endif
 
@@ -114,13 +143,11 @@ lws_read(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 		/* fallthru */
 
 	case LWSS_HTTP_HEADERS:
-		if (!wsi->u.hdr.ah) {
+		if (!wsi->ah) {
 			lwsl_err("%s: LWSS_HTTP_HEADERS: NULL ah\n", __func__);
 			assert(0);
 		}
 		lwsl_parser("issuing %d bytes to parser\n", (int)len);
-
-		lwsl_hexdump(buf, (size_t)len);
 
 		if (lws_handshake_client(wsi, &buf, (size_t)len))
 			goto bail;
@@ -156,9 +183,9 @@ lws_read(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 			case LWSS_HTTP_ISSUING_FILE:
 				goto read_ok;
 			case LWSS_HTTP_BODY:
-				wsi->u.http.rx_content_remain =
-						wsi->u.http.rx_content_length;
-				if (wsi->u.http.rx_content_remain)
+				wsi->http.rx_content_remain =
+						wsi->http.rx_content_length;
+				if (wsi->http.rx_content_remain)
 					goto http_postbody;
 
 				/* there is no POST content */
@@ -171,13 +198,13 @@ lws_read(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 	case LWSS_HTTP_BODY:
 http_postbody:
 		//lwsl_notice("http post body\n");
-		while (len && wsi->u.http.rx_content_remain) {
+		while (len && wsi->http.rx_content_remain) {
 			/* Copy as much as possible, up to the limit of:
 			 * what we have in the read buffer (len)
 			 * remaining portion of the POST body (content_remain)
 			 */
-			body_chunk_len = min(wsi->u.http.rx_content_remain, len);
-			wsi->u.http.rx_content_remain -= body_chunk_len;
+			body_chunk_len = min(wsi->http.rx_content_remain, len);
+			wsi->http.rx_content_remain -= body_chunk_len;
 			len -= body_chunk_len;
 #ifdef LWS_WITH_CGI
 			if (wsi->cgi) {
@@ -209,7 +236,7 @@ http_postbody:
 #endif
 			buf += n;
 
-			if (wsi->u.http.rx_content_remain)  {
+			if (wsi->http.rx_content_remain)  {
 				lws_set_timeout(wsi, PENDING_TIMEOUT_HTTP_CONTENT,
 						wsi->context->timeout_secs);
 				break;
@@ -231,7 +258,7 @@ postbody_completion:
 			if (!wsi->cgi)
 #endif
 			{
-				lwsl_notice("LWS_CALLBACK_HTTP_BODY_COMPLETION\n");
+				lwsl_notice("HTTP_BODY_COMPLETION\n");
 				n = wsi->protocol->callback(wsi,
 					LWS_CALLBACK_HTTP_BODY_COMPLETION,
 					wsi->user_space, NULL, 0);
@@ -254,27 +281,41 @@ postbody_completion:
 			goto bail;
 		switch (wsi->mode) {
 		case LWSCM_WS_SERVING:
+		case LWSCM_HTTP2_WS_SERVING:
 
-			if (lws_interpret_incoming_packet(wsi, &buf, (size_t)len) < 0) {
-				lwsl_info("interpret_incoming_packet has bailed\n");
+			if (lws_interpret_incoming_packet(wsi, &buf,
+							  (size_t)len) < 0) {
+				lwsl_info("interpret_incoming_packet bailed\n");
 				goto bail;
 			}
 			break;
 		}
 		break;
+
+	case LWSS_HTTP_DEFERRING_ACTION:
+		lwsl_debug("%s: LWSS_HTTP_DEFERRING_ACTION\n", __func__);
+		break;
+
 	default:
 		lwsl_err("%s: Unhandled state %d\n", __func__, wsi->state);
-		break;
+		goto bail;
 	}
 
 read_ok:
 	/* Nothing more to do for now */
-	lwsl_info("%s: read_ok, used %ld\n", __func__, (long)(buf - oldbuf));
+	lwsl_info("%s: %p: read_ok, used %ld (len %d, state %d)\n", __func__,
+		  wsi, (long)(buf - oldbuf), (int)len, wsi->state);
 
-	return buf - oldbuf;
+	return lws_ptr_diff(buf, oldbuf);
 
 bail:
-	lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
+	/*
+	 * h2 / h2-ws calls us recursively in lws_read()->lws_h2_parser()->
+	 * lws_read() pattern.  Make sure that only the outer lws_read() does
+	 * the wsi close.
+	 */
+	if (!wsi->outer_will_close)
+		lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
 
 	return -1;
 }

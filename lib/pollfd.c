@@ -24,6 +24,9 @@
 int
 _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 {
+#if !defined(LWS_WITH_LIBUV) && !defined(LWS_WITH_LIBEV) && !defined(LWS_WITH_LIBEVENT)
+	volatile struct lws_context_per_thread *vpt;
+#endif
 	struct lws_context_per_thread *pt;
 	struct lws_context *context;
 	int ret = 0, pa_events = 1;
@@ -33,7 +36,8 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 	if (!wsi || wsi->position_in_fds_table < 0)
 		return 0;
 
-	if (wsi->handling_pollout && !_and && _or == LWS_POLLOUT) {
+	if (((volatile struct lws *)wsi)->handling_pollout &&
+	    !_and && _or == LWS_POLLOUT) {
 		/*
 		 * Happening alongside service thread handling POLLOUT.
 		 * The danger is when he is finished, he will disable POLLOUT,
@@ -42,7 +46,7 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 		 * Instead of changing the fds, inform the service thread
 		 * what happened, and ask it to leave POLLOUT active on exit
 		 */
-		wsi->leave_pollout_active = 1;
+		((volatile struct lws *)wsi)->leave_pollout_active = 1;
 		/*
 		 * by definition service thread is not in poll wait, so no need
 		 * to cancel service
@@ -55,19 +59,85 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 
 	context = wsi->context;
 	pt = &context->pt[(int)wsi->tsi];
+
 	assert(wsi->position_in_fds_table >= 0 &&
-	       wsi->position_in_fds_table < pt->fds_count);
+	       wsi->position_in_fds_table < (int)pt->fds_count);
+
+#if !defined(LWS_WITH_LIBUV) && !defined(LWS_WITH_LIBEV) && !defined(LWS_WITH_LIBEVENT)
+	/*
+	 * This only applies when we use the default poll() event loop.
+	 *
+	 * BSD can revert pa->events at any time, when the kernel decides to
+	 * exit from poll().  We can't protect against it using locking.
+	 *
+	 * Therefore we must check first if the service thread is in poll()
+	 * wait; if so, we know we must be being called from a foreign thread,
+	 * and we must keep a strictly ordered list of changes we made instead
+	 * of trying to apply them, since when poll() exits, which may happen
+	 * at any time it would revert our changes.
+	 *
+	 * The plat code will apply them when it leaves the poll() wait
+	 * before doing anything else.
+	 */
+
+	vpt = (volatile struct lws_context_per_thread *)pt;
+
+	vpt->foreign_spinlock = 1;
+	lws_memory_barrier();
+
+	if (vpt->inside_poll) {
+		struct lws_foreign_thread_pollfd *ftp, **ftp1;
+		/*
+		 * We are certainly a foreign thread trying to change events
+		 * while the service thread is in the poll() wait.
+		 *
+		 * Create a list of changes to be applied after poll() exit,
+		 * instead of trying to apply them now.
+		 */
+		ftp = lws_malloc(sizeof(*ftp), "ftp");
+		if (!ftp) {
+			vpt->foreign_spinlock = 0;
+			lws_memory_barrier();
+			ret = -1;
+			goto bail;
+		}
+
+		ftp->_and = _and;
+		ftp->_or = _or;
+		ftp->fd_index = wsi->position_in_fds_table;
+		ftp->next = NULL;
+
+		/* place at END of list to maintain order */
+		ftp1 = (struct lws_foreign_thread_pollfd **)
+						&vpt->foreign_pfd_list;
+		while (*ftp1)
+			ftp1 = &((*ftp1)->next);
+
+		*ftp1 = ftp;
+		vpt->foreign_spinlock = 0;
+		lws_memory_barrier();
+		lws_cancel_service_pt(wsi);
+
+		return 0;
+	}
+
+	vpt->foreign_spinlock = 0;
+	lws_memory_barrier();
+#endif
 
 	pfd = &pt->fds[wsi->position_in_fds_table];
 	pa->fd = wsi->desc.sockfd;
+	lwsl_debug("%s: wsi %p: fd %d events %d -> %d\n", __func__, wsi, pa->fd, pfd->events, (pfd->events & ~_and) | _or);
 	pa->prev_events = pfd->events;
 	pa->events = pfd->events = (pfd->events & ~_and) | _or;
 
 	if (wsi->http2_substream)
 		return 0;
 
-	if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_CHANGE_MODE_POLL_FD,
-					   wsi->user_space, (void *)pa, 0)) {
+	if (wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi,
+			    	    	      LWS_CALLBACK_CHANGE_MODE_POLL_FD,
+					      wsi->user_space, (void *)pa, 0)) {
 		ret = -1;
 		goto bail;
 	}
@@ -105,15 +175,13 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 #endif
 
 	if (pa_events) {
-
 		if (lws_plat_change_pollfd(context, wsi, pfd)) {
 			lwsl_info("%s failed\n", __func__);
 			ret = -1;
 			goto bail;
 		}
-
 		sampled_tid = context->service_tid;
-		if (sampled_tid) {
+		if (sampled_tid && wsi->vhost) {
 			tid = wsi->vhost->protocols[0].callback(wsi,
 				     LWS_CALLBACK_GET_THREAD_ID, NULL, NULL, 0);
 			if (tid == -1) {
@@ -124,6 +192,7 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 				lws_cancel_service_pt(wsi);
 		}
 	}
+
 bail:
 	return ret;
 }
@@ -167,29 +236,27 @@ insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 		return 1;
 	}
 
-#if !defined(_WIN32) && !defined(LWS_WITH_ESP8266)
-	if (wsi->desc.sockfd >= context->max_fds) {
-		lwsl_err("Socket fd %d is too high (%d)\n",
-			 wsi->desc.sockfd, context->max_fds);
+#if !defined(_WIN32)
+	if (wsi->desc.sockfd - lws_plat_socket_offset() >= context->max_fds) {
+		lwsl_err("Socket fd %d is too high (%d) offset %d\n",
+			 wsi->desc.sockfd, context->max_fds, lws_plat_socket_offset());
 		return 1;
 	}
 #endif
 
 	assert(wsi);
-	assert(wsi->vhost);
+	assert(wsi->event_pipe || wsi->vhost);
 	assert(lws_socket_is_valid(wsi->desc.sockfd));
 
-	if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_LOCK_POLL,
+	if (wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_LOCK_POLL,
 					   wsi->user_space, (void *) &pa, 1))
 		return -1;
 
 	lws_pt_lock(pt);
 	pt->count_conns++;
 	insert_wsi(context, wsi);
-#if defined(LWS_WITH_ESP8266)
-	if (wsi->position_in_fds_table == -1)
-#endif
-		wsi->position_in_fds_table = pt->fds_count;
+	wsi->position_in_fds_table = pt->fds_count;
 
 	pt->fds[wsi->position_in_fds_table].fd = wsi->desc.sockfd;
 #if LWS_POSIX
@@ -202,7 +269,8 @@ insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 	lws_plat_insert_socket_into_fds(context, wsi);
 
 	/* external POLL support via protocol 0 */
-	if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_ADD_POLL_FD,
+	if (wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_ADD_POLL_FD,
 					   wsi->user_space, (void *) &pa, 0))
 		ret =  -1;
 #ifndef LWS_NO_SERVER
@@ -212,7 +280,8 @@ insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 #endif
 	lws_pt_unlock(pt);
 
-	if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
+	if (wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
 					   wsi->user_space, (void *)&pa, 1))
 		ret = -1;
 
@@ -224,11 +293,9 @@ remove_wsi_socket_from_fds(struct lws *wsi)
 {
 	struct lws_context *context = wsi->context;
 	struct lws_pollargs pa = { wsi->desc.sockfd, 0, 0 };
-#if !defined(LWS_WITH_ESP8266)
 	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
 	struct lws *end_wsi;
 	int v;
-#endif
 	int m, ret = 0;
 
 	if (wsi->parent_carries_io) {
@@ -236,15 +303,16 @@ remove_wsi_socket_from_fds(struct lws *wsi)
 		return 0;
 	}
 
-#if !defined(_WIN32) && !defined(LWS_WITH_ESP8266)
-	if (wsi->desc.sockfd > context->max_fds) {
+#if !defined(_WIN32)
+	if (wsi->desc.sockfd - lws_plat_socket_offset() > context->max_fds) {
 		lwsl_err("fd %d too high (%d)\n", wsi->desc.sockfd,
 			 context->max_fds);
 		return 1;
 	}
 #endif
 
-	if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_LOCK_POLL,
+	if (wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_LOCK_POLL,
 					   wsi->user_space, (void *)&pa, 1))
 		return -1;
 
@@ -253,7 +321,6 @@ remove_wsi_socket_from_fds(struct lws *wsi)
 	/* the guy who is to be deleted's slot index in pt->fds */
 	m = wsi->position_in_fds_table;
 	
-#if !defined(LWS_WITH_ESP8266)
 	lws_libev_io(wsi, LWS_EV_STOP | LWS_EV_READ | LWS_EV_WRITE |
 			  LWS_EV_PREPARE_DELETION);
 	lws_libuv_io(wsi, LWS_EV_STOP | LWS_EV_READ | LWS_EV_WRITE |
@@ -267,15 +334,13 @@ remove_wsi_socket_from_fds(struct lws *wsi)
 
 	/* have the last guy take up the now vacant slot */
 	pt->fds[m] = pt->fds[pt->fds_count - 1];
-#endif
 	/* this decrements pt->fds_count */
 	lws_plat_delete_socket_from_fds(context, wsi, m);
-#if !defined(LWS_WITH_ESP8266)
 	v = (int) pt->fds[m].fd;
 	/* end guy's "position in fds table" is now the deletion guy's old one */
 	end_wsi = wsi_from_fd(context, v);
 	if (!end_wsi) {
-		lwsl_err("no wsi found for sock fd %d at pos %d, pt->fds_count=%d\n",
+		lwsl_err("no wsi found for fd %d at pos %d, pt->fds_count=%d\n",
 				(int)pt->fds[m].fd, m, pt->fds_count);
 		assert(0);
 	} else
@@ -287,22 +352,24 @@ remove_wsi_socket_from_fds(struct lws *wsi)
 	wsi->position_in_fds_table = -1;
 
 	/* remove also from external POLL support via protocol 0 */
-	if (lws_socket_is_valid(wsi->desc.sockfd))
-		if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_DEL_POLL_FD,
-						   wsi->user_space, (void *) &pa, 0))
-			ret = -1;
+	if (lws_socket_is_valid(wsi->desc.sockfd) && wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_DEL_POLL_FD,
+					      wsi->user_space, (void *) &pa, 0))
+		ret = -1;
+
 #ifndef LWS_NO_SERVER
-	if (!context->being_destroyed)
-		/* if this made some room, accept connects on this thread */
-		if ((unsigned int)pt->fds_count < context->fd_limit_per_thread - 1)
-			lws_accept_modulation(pt, 1);
+	if (!context->being_destroyed &&
+	    /* if this made some room, accept connects on this thread */
+	    (unsigned int)pt->fds_count < context->fd_limit_per_thread - 1)
+		lws_accept_modulation(pt, 1);
 #endif
 	lws_pt_unlock(pt);
 
-	if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
+	if (wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
 					      wsi->user_space, (void *) &pa, 1))
 		ret = -1;
-#endif
+
 	return ret;
 }
 
@@ -314,15 +381,17 @@ lws_change_pollfd(struct lws *wsi, int _and, int _or)
 	struct lws_pollargs pa;
 	int ret = 0;
 
-	if (!wsi || !wsi->protocol || wsi->position_in_fds_table < 0)
+	if (!wsi || (!wsi->protocol && !wsi->event_pipe) ||
+	    wsi->position_in_fds_table < 0)
 		return 1;
 
 	context = lws_get_context(wsi);
 	if (!context)
 		return 1;
 
-	if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_LOCK_POLL,
-					      wsi->user_space,  (void *) &pa, 0))
+	if (wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_LOCK_POLL,
+					      wsi->user_space, (void *) &pa, 0))
 		return -1;
 
 	pt = &context->pt[(int)wsi->tsi];
@@ -330,7 +399,8 @@ lws_change_pollfd(struct lws *wsi, int _and, int _or)
 	lws_pt_lock(pt);
 	ret = _lws_change_pollfd(wsi, _and, _or, &pa);
 	lws_pt_unlock(pt);
-	if (wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
+	if (wsi->vhost &&
+	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
 					   wsi->user_space, (void *) &pa, 0))
 		ret = -1;
 
@@ -375,23 +445,25 @@ lws_callback_on_writable(struct lws *wsi)
 #if defined(LWS_WITH_STATS)
 	if (!wsi->active_writable_req_us) {
 		wsi->active_writable_req_us = time_in_microseconds();
-		lws_stats_atomic_bump(wsi->context, pt, LWSSTATS_C_WRITEABLE_CB_EFF_REQ, 1);
+		lws_stats_atomic_bump(wsi->context, pt,
+				      LWSSTATS_C_WRITEABLE_CB_EFF_REQ, 1);
 	}
 #endif
 
 #ifdef LWS_WITH_HTTP2
 	lwsl_info("%s: %p\n", __func__, wsi);
 
-	if (wsi->mode != LWSCM_HTTP2_SERVING)
+	if (wsi->mode != LWSCM_HTTP2_SERVING &&
+	    wsi->mode != LWSCM_HTTP2_WS_SERVING)
 		goto network_sock;
 
-	if (wsi->u.h2.requested_POLLOUT) {
+	if (wsi->h2.requested_POLLOUT) {
 		lwsl_info("already pending writable\n");
 		return 1;
 	}
 
 	/* is this for DATA or for control messages? */
-	if (wsi->upgraded_to_http2 && !wsi->u.h2.h2n->pps &&
+	if (wsi->upgraded_to_http2 && !wsi->h2.h2n->pps &&
 	    !lws_h2_tx_cr_get(wsi)) {
 		/*
 		 * other side is not able to cope with us sending DATA
@@ -401,22 +473,23 @@ lws_callback_on_writable(struct lws *wsi)
 		 * Delay waiting for our POLLOUT until peer indicates he has
 		 * space for more using tx window command in http2 layer
 		 */
-		lwsl_notice("%s: %p: skint (%d)\n", __func__, wsi, wsi->u.h2.tx_cr);
-		wsi->u.h2.skint = 1;
+		lwsl_notice("%s: %p: skint (%d)\n", __func__, wsi,
+			    wsi->h2.tx_cr);
+		wsi->h2.skint = 1;
 		return 0;
 	}
 
-	wsi->u.h2.skint = 0;
+	wsi->h2.skint = 0;
 	network_wsi = lws_get_network_wsi(wsi);
-	already = network_wsi->u.h2.requested_POLLOUT;
+	already = network_wsi->h2.requested_POLLOUT;
 
 	/* mark everybody above him as requesting pollout */
 
 	wsi2 = wsi;
 	while (wsi2) {
-		wsi2->u.h2.requested_POLLOUT = 1;
+		wsi2->h2.requested_POLLOUT = 1;
 		lwsl_info("mark %p pending writable\n", wsi2);
-		wsi2 = wsi2->u.h2.parent_wsi;
+		wsi2 = wsi2->h2.parent_wsi;
 	}
 
 	/* for network action, act only on the network wsi */
@@ -431,7 +504,8 @@ network_sock:
 		return 1;
 
 	if (wsi->position_in_fds_table < 0) {
-		lwsl_debug("%s: failed to find socket %d\n", __func__, wsi->desc.sockfd);
+		lwsl_debug("%s: failed to find socket %d\n", __func__,
+			   wsi->desc.sockfd);
 		return -1;
 	}
 
@@ -523,7 +597,8 @@ lws_callback_on_writable_all_protocol_vhost(const struct lws_vhost *vhost,
 		assert(wsi->protocol == protocol);
 		assert(*wsi->same_vh_protocol_prev == wsi);
 		if (wsi->same_vh_protocol_next)
-			assert(wsi->same_vh_protocol_next->same_vh_protocol_prev ==
+			assert(wsi->same_vh_protocol_next->
+					same_vh_protocol_prev ==
 					&wsi->same_vh_protocol_next);
 
 		lws_callback_on_writable(wsi);

@@ -29,6 +29,54 @@
 #endif
 #include <dirent.h>
 
+int
+lws_plat_socket_offset(void)
+{
+	return 0;
+}
+
+int
+lws_plat_pipe_create(struct lws *wsi)
+{
+	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+
+	return pipe(pt->dummy_pipe_fds);
+}
+
+int
+lws_plat_pipe_signal(struct lws *wsi)
+{
+	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+	char buf = 0;
+	int n;
+
+	n = write(pt->dummy_pipe_fds[1], &buf, 1);
+
+	lwsl_debug("%s: fd %d %d\n", __func__, pt->dummy_pipe_fds[1], n);
+
+	return n != 1;
+}
+
+void
+lws_plat_pipe_close(struct lws *wsi)
+{
+	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+
+	if (pt->dummy_pipe_fds[0] && pt->dummy_pipe_fds[0] != -1)
+		close(pt->dummy_pipe_fds[0]);
+	if (pt->dummy_pipe_fds[1] && pt->dummy_pipe_fds[1] != -1)
+		close(pt->dummy_pipe_fds[1]);
+
+	pt->dummy_pipe_fds[0] = pt->dummy_pipe_fds[1] = -1;
+}
+
+#ifdef __QNX__
+# include "netinet/tcp_var.h"
+# define TCP_KEEPINTVL TCPCTL_KEEPINTVL
+# define TCP_KEEPIDLE  TCPCTL_KEEPIDLE
+# define TCP_KEEPCNT   TCPCTL_KEEPCNT
+#endif
+
 unsigned long long time_in_microseconds(void)
 {
 	struct timeval tv;
@@ -52,6 +100,10 @@ lws_send_pipe_choked(struct lws *wsi)
 #if defined(LWS_WITH_HTTP2)
 	wsi_eff = lws_get_network_wsi(wsi);
 #endif
+
+	/* the fact we checked implies we avoided back-to-back writes */
+	wsi_eff->could_have_pending = 0;
+
 	/* treat the fact we got a truncated send pending as if we're choked */
 	if (wsi_eff->trunc_len)
 		return 1;
@@ -75,29 +127,6 @@ LWS_VISIBLE int
 lws_poll_listen_fd(struct lws_pollfd *fd)
 {
 	return poll(fd, 1, 0);
-}
-
-LWS_VISIBLE void
-lws_cancel_service_pt(struct lws *wsi)
-{
-	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
-	char buf = 0;
-
-	if (write(pt->dummy_pipe_fds[1], &buf, sizeof(buf)) != 1)
-		lwsl_err("Cannot write to dummy pipe");
-}
-
-LWS_VISIBLE void
-lws_cancel_service(struct lws_context *context)
-{
-	struct lws_context_per_thread *pt = &context->pt[0];
-	char buf = 0, m = context->count_threads;
-
-	while (m--) {
-		if (write(pt->dummy_pipe_fds[1], &buf, sizeof(buf)) != 1)
-			lwsl_err("Cannot write to dummy pipe");
-		pt++;
-	}
 }
 
 LWS_VISIBLE void lwsl_emit_syslog(int level, const char *line)
@@ -124,9 +153,10 @@ LWS_VISIBLE void lwsl_emit_syslog(int level, const char *line)
 LWS_VISIBLE LWS_EXTERN int
 _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 {
+	volatile struct lws_foreign_thread_pollfd *ftp, *next;
+	volatile struct lws_context_per_thread *vpt;
 	struct lws_context_per_thread *pt;
 	int n = -1, m, c;
-	char buf;
 
 	/* stay dead once we are dead */
 
@@ -134,6 +164,7 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 		return 1;
 
 	pt = &context->pt[tsi];
+	vpt = (volatile struct lws_context_per_thread *)pt;
 
 	lws_stats_atomic_bump(context, pt, LWSSTATS_C_SERVICE_ENTRY, 1);
 
@@ -169,7 +200,41 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 			timeout_ms = 0;
 	}
 
+	vpt->inside_poll = 1;
+	lws_memory_barrier();
 	n = poll(pt->fds, pt->fds_count, timeout_ms);
+	vpt->inside_poll = 0;
+	lws_memory_barrier();
+
+	/* Collision will be rare and brief.  Just spin until it completes */
+	while (vpt->foreign_spinlock)
+		;
+
+	/*
+	 * At this point we are not inside a foreign thread pollfd change,
+	 * and we have marked ourselves as outside the poll() wait.  So we
+	 * are the only guys that can modify the lws_foreign_thread_pollfd
+	 * list on the pt.  Drain the list and apply the changes to the
+	 * affected pollfds in the correct order.
+	 */
+	ftp = vpt->foreign_pfd_list;
+	//lwsl_notice("cleared list %p\n", ftp);
+	while (ftp) {
+		struct lws *wsi;
+		struct lws_pollfd *pfd;
+
+		next = ftp->next;
+		pfd = &vpt->fds[ftp->fd_index];
+		if (lws_sockfd_valid(pfd->fd)) {
+			wsi = wsi_from_fd(context, pfd->fd);
+			if (wsi)
+				lws_change_pollfd(wsi, ftp->_and, ftp->_or);
+		}
+		lws_free((void *)ftp);
+		ftp = next;
+	}
+	vpt->foreign_pfd_list = NULL;
+	lws_memory_barrier();
 
 #ifdef LWS_OPENSSL_SUPPORT
 	if (!n && !pt->rx_draining_ext_list &&
@@ -194,17 +259,11 @@ faked_service:
 			c = n;
 
 	/* any socket with events to service? */
-	for (n = 0; n < pt->fds_count && c; n++) {
+	for (n = 0; n < (int)pt->fds_count && c; n++) {
 		if (!pt->fds[n].revents)
 			continue;
 
 		c--;
-
-		if (pt->fds[n].fd == pt->dummy_pipe_fds[0]) {
-			if (read(pt->fds[n].fd, &buf, 1) != 1)
-				lwsl_err("Cannot read from dummy pipe.");
-			continue;
-		}
 
 		m = lws_service_fd_tsi(context, &pt->fds[n], tsi);
 		if (m < 0)
@@ -292,7 +351,7 @@ lws_plat_set_socket_options(struct lws_vhost *vhost, int fd)
 
 	/* Disable Nagle */
 	optval = 1;
-#if defined (__sun)
+#if defined (__sun) || defined(__QNX__)
 	if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const void *)&optval, optlen) < 0)
 		return 1;
 #elif !defined(__APPLE__) && \
@@ -543,9 +602,6 @@ lws_plat_context_early_destroy(struct lws_context *context)
 LWS_VISIBLE void
 lws_plat_context_late_destroy(struct lws_context *context)
 {
-	struct lws_context_per_thread *pt = &context->pt[0];
-	int m = context->count_threads;
-
 #ifdef LWS_WITH_PLUGINS
 	if (context->plugin_list)
 		lws_plat_plugins_destroy(context);
@@ -554,13 +610,6 @@ lws_plat_context_late_destroy(struct lws_context *context)
 	if (context->lws_lookup)
 		lws_free(context->lws_lookup);
 
-	while (m--) {
-		if (pt->dummy_pipe_fds[0])
-			close(pt->dummy_pipe_fds[0]);
-		if (pt->dummy_pipe_fds[1])
-			close(pt->dummy_pipe_fds[1]);
-		pt++;
-	}
 	if (!context->fd_random)
 		lwsl_err("ZERO RANDOM FD\n");
 	if (context->fd_random != LWS_INVALID_FILE)
@@ -739,7 +788,8 @@ _lws_plat_file_seek_cur(lws_fop_fd_t fop_fd, lws_fileofs_t offset)
 {
 	lws_fileofs_t r;
 
-	if (offset > 0 && offset > fop_fd->len - fop_fd->pos)
+	if (offset > 0 &&
+	    offset > (lws_fileofs_t)fop_fd->len - (lws_fileofs_t)fop_fd->pos)
 		offset = fop_fd->len - fop_fd->pos;
 
 	if ((lws_fileofs_t)fop_fd->pos + offset < 0)
@@ -793,13 +843,11 @@ _lws_plat_file_write(lws_fop_fd_t fop_fd, lws_filepos_t *amount,
 	return 0;
 }
 
-
 LWS_VISIBLE int
 lws_plat_init(struct lws_context *context,
 	      struct lws_context_creation_info *info)
 {
-	struct lws_context_per_thread *pt = &context->pt[0];
-	int n = context->count_threads, fd;
+	int fd;
 
 	/* master context has the global fd lookup array */
 	context->lws_lookup = lws_zalloc(sizeof(struct lws *) *
@@ -821,25 +869,9 @@ lws_plat_init(struct lws_context *context,
 		return 1;
 	}
 
-	if (!lws_libev_init_fd_table(context) &&
-	    !lws_libuv_init_fd_table(context) &&
-	    !lws_libevent_init_fd_table(context)) {
-		/* otherwise libev/uv/event handled it instead */
-
-		while (n--) {
-			if (pipe(pt->dummy_pipe_fds)) {
-				lwsl_err("Unable to create pipe\n");
-				return 1;
-			}
-
-			/* use the read end of pipe as first item */
-			pt->fds[0].fd = pt->dummy_pipe_fds[0];
-			pt->fds[0].events = LWS_POLLIN;
-			pt->fds[0].revents = 0;
-			pt->fds_count = 1;
-			pt++;
-		}
-	}
+	(void)lws_libev_init_fd_table(context);
+	(void)lws_libuv_init_fd_table(context);
+	(void)lws_libevent_init_fd_table(context);
 
 #ifdef LWS_WITH_PLUGINS
 	if (info->plugin_dirs)
@@ -847,4 +879,53 @@ lws_plat_init(struct lws_context *context,
 #endif
 
 	return 0;
+}
+
+LWS_VISIBLE int
+lws_plat_write_cert(struct lws_vhost *vhost, int is_key, int fd, void *buf,
+			int len)
+{
+	int n;
+
+	n = write(fd, buf, len);
+
+	fsync(fd);
+	lseek(fd, 0, SEEK_SET);
+
+	return n != len;
+}
+
+LWS_VISIBLE int
+lws_plat_write_file(const char *filename, void *buf, int len)
+{
+	int m, fd;
+
+	fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+
+	if (fd == -1)
+		return 1;
+
+	m = write(fd, buf, len);
+	close(fd);
+
+	return m != len;
+}
+
+LWS_VISIBLE int
+lws_plat_read_file(const char *filename, void *buf, int len)
+{
+	int n, fd = open(filename, O_RDONLY);
+	if (fd == -1)
+		return -1;
+
+	n = read(fd, buf, len);
+	close(fd);
+
+	return n;
+}
+
+LWS_VISIBLE int
+lws_plat_recommended_rsa_bits(void)
+{
+	return 4096;
 }

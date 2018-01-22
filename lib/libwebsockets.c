@@ -27,6 +27,7 @@
 
 #ifdef LWS_WITH_IPV6
 #if defined(WIN32) || defined(_WIN32)
+#include <wincrypt.h>
 #include <Iphlpapi.h>
 #else
 #include <net/if.h>
@@ -78,6 +79,7 @@ lws_free_wsi(struct lws *wsi)
 
 	lws_free_set_NULL(wsi->rxflow_buffer);
 	lws_free_set_NULL(wsi->trunc_alloc);
+	lws_free_set_NULL(wsi->ws);
 
 	/* we may not have an ah, but may be on the waiting list... */
 	lwsl_info("ah det due to close\n");
@@ -85,7 +87,7 @@ lws_free_wsi(struct lws *wsi)
 	lws_header_table_force_to_detachable_state(wsi);
 	lws_header_table_detach(wsi, 0);
 
-	if (wsi->vhost->lserv_wsi == wsi)
+	if (wsi->vhost && wsi->vhost->lserv_wsi == wsi)
 		wsi->vhost->lserv_wsi = NULL;
 
 	lws_pt_lock(pt);
@@ -110,8 +112,8 @@ lws_free_wsi(struct lws *wsi)
 	if (wsi->upgraded_to_http2 || wsi->http2_substream) {
 		lws_hpack_destroy_dynamic_header(wsi);
 
-		if (wsi->u.h2.h2n)
-			lws_free_set_NULL(wsi->u.h2.h2n);
+		if (wsi->h2.h2n)
+			lws_free_set_NULL(wsi->h2.h2n);
 	}
 #endif
 
@@ -122,11 +124,19 @@ lws_free_wsi(struct lws *wsi)
 	lws_ssl_remove_wsi_from_buffered_list(wsi);
 	lws_remove_from_timeout_list(wsi);
 
+	lws_libevent_destroy(wsi);
+
 	wsi->context->count_wsi_allocated--;
 	lwsl_debug("%s: %p, remaining wsi %d\n", __func__, wsi,
 			wsi->context->count_wsi_allocated);
 
 	lws_free(wsi);
+}
+
+int
+lws_should_be_on_timeout_list(struct lws *wsi)
+{
+	return wsi->timer_active || wsi->pending_timeout;
 }
 
 void
@@ -147,7 +157,53 @@ lws_remove_from_timeout_list(struct lws *wsi)
 	/* we're out of the list, we should not point anywhere any more */
 	wsi->timeout_list_prev = NULL;
 	wsi->timeout_list = NULL;
+
 	lws_pt_unlock(pt);
+}
+
+static void
+lws_add_to_timeout_list(struct lws *wsi)
+{
+	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+
+	if (wsi->timeout_list_prev)
+		return;
+
+	/* our next guy is current first guy */
+	wsi->timeout_list = pt->timeout_list;
+	/* if there is a next guy, set his prev ptr to our next ptr */
+	if (wsi->timeout_list)
+		wsi->timeout_list->timeout_list_prev = &wsi->timeout_list;
+	/* our prev ptr is first ptr */
+	wsi->timeout_list_prev = &pt->timeout_list;
+	/* set the first guy to be us */
+	*wsi->timeout_list_prev = wsi;
+}
+
+LWS_VISIBLE void
+lws_set_timer(struct lws *wsi, int secs)
+{
+	time_t now;
+
+	if (secs < 0) {
+		wsi->timer_active = 0;
+
+		if (!lws_should_be_on_timeout_list(wsi))
+			lws_remove_from_timeout_list(wsi);
+
+		return;
+	}
+
+	time(&now);
+
+	wsi->pending_timer_limit = secs;
+	wsi->pending_timer_set = now;
+
+	if (!wsi->timer_active) {
+		wsi->timer_active = 1;
+		if (!wsi->pending_timeout)
+			lws_add_to_timeout_list(wsi);
+	}
 }
 
 LWS_VISIBLE void
@@ -167,26 +223,54 @@ lws_set_timeout(struct lws *wsi, enum pending_timeout reason, int secs)
 
 	time(&now);
 
-	if (reason && !wsi->timeout_list_prev) {
-		/* our next guy is current first guy */
-		wsi->timeout_list = pt->timeout_list;
-		/* if there is a next guy, set his prev ptr to our next ptr */
-		if (wsi->timeout_list)
-			wsi->timeout_list->timeout_list_prev = &wsi->timeout_list;
-		/* our prev ptr is first ptr */
-		wsi->timeout_list_prev = &pt->timeout_list;
-		/* set the first guy to be us */
-		*wsi->timeout_list_prev = wsi;
-	}
+	if (reason)
+		lws_add_to_timeout_list(wsi);
 
 	lwsl_debug("%s: %p: %d secs\n", __func__, wsi, secs);
-	wsi->pending_timeout_limit = now + secs;
+	wsi->pending_timeout_limit = secs;
+	wsi->pending_timeout_set = now;
 	wsi->pending_timeout = reason;
 
 	lws_pt_unlock(pt);
 
-	if (!reason)
+	if (!reason && !lws_should_be_on_timeout_list(wsi))
 		lws_remove_from_timeout_list(wsi);
+}
+
+int
+lws_timed_callback_remove(struct lws_vhost *vh, struct lws_timed_vh_protocol *p)
+{
+	lws_start_foreach_llp(struct lws_timed_vh_protocol **, pt,
+			      vh->timed_vh_protocol_list) {
+		if (*pt == p) {
+			*pt = p->next;
+			lws_free(p);
+
+			return 0;
+		}
+	} lws_end_foreach_llp(pt, next);
+
+	return 1;
+}
+
+LWS_VISIBLE LWS_EXTERN int
+lws_timed_callback_vh_protocol(struct lws_vhost *vh, const struct lws_protocols *prot,
+			       int reason, int secs)
+{
+	struct lws_timed_vh_protocol *p = (struct lws_timed_vh_protocol *)
+			lws_malloc(sizeof(*p), "timed_vh");
+
+	if (!p)
+		return 1;
+
+	p->protocol = prot;
+	p->reason = reason;
+	p->time = lws_now_secs() + secs;
+	p->next = vh->timed_vh_protocol_list;
+
+	vh->timed_vh_protocol_list = p;
+
+	return 0;
 }
 
 static void
@@ -245,7 +329,7 @@ lws_bind_protocol(struct lws *wsi, const struct lws_protocols *p)
 		return 1;
 
 	if (p > vp && p < &vp[wsi->vhost->count_protocols])
-		lws_same_vh_protocol_insert(wsi, p - vp);
+		lws_same_vh_protocol_insert(wsi, (int)(p - vp));
 	else {
 		int n = wsi->vhost->count_protocols;
 		int hit = 0;
@@ -255,7 +339,7 @@ lws_bind_protocol(struct lws *wsi, const struct lws_protocols *p)
 		while (n--) {
 			if (p->name && vp->name && !strcmp(p->name, vp->name)) {
 				hit = 1;
-				lws_same_vh_protocol_insert(wsi, vp - vpo);
+				lws_same_vh_protocol_insert(wsi, (int)(vp - vpo));
 				break;
 			}
 			vp++;
@@ -287,16 +371,6 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 		return;
 
 	lws_access_log(wsi);
-#if defined(LWS_WITH_ESP8266)
-	if (wsi->premature_rx)
-		lws_free(wsi->premature_rx);
-
-	if (wsi->pending_send_completion && !wsi->close_is_pending_send_completion) {
-		lwsl_notice("delaying close\n");
-		wsi->close_is_pending_send_completion = 1;
-		return;
-	}
-#endif
 
 	/* we're closing, losing some rx is OK */
 	lws_header_table_force_to_detachable_state(wsi);
@@ -321,68 +395,73 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 
 #if defined(LWS_WITH_HTTP2)
 
-	if (wsi->u.h2.parent_wsi) {
-		lwsl_info(" wsi: %p, his parent %p: siblings:\n", wsi, wsi->u.h2.parent_wsi);
-		lws_start_foreach_llp(struct lws **, w, wsi->u.h2.parent_wsi->u.h2.child_list) {
+	if (wsi->h2.parent_wsi) {
+		lwsl_info(" wsi: %p, his parent %p: siblings:\n", wsi,
+			  wsi->h2.parent_wsi);
+		lws_start_foreach_llp(struct lws **, w,
+				      wsi->h2.parent_wsi->h2.child_list) {
 			lwsl_info("   \\---- child %p\n", *w);
-		} lws_end_foreach_llp(w, u.h2.sibling_list);
+		} lws_end_foreach_llp(w, h2.sibling_list);
 	}
 
 	if (wsi->upgraded_to_http2 || wsi->http2_substream) {
-		lwsl_info("closing %p: parent %p\n", wsi, wsi->u.h2.parent_wsi);
+		lwsl_info("closing %p: parent %p\n", wsi, wsi->h2.parent_wsi);
 
-		if (wsi->u.h2.child_list) {
+		if (wsi->h2.child_list) {
 			lwsl_info(" parent %p: closing children: list:\n", wsi);
-			lws_start_foreach_llp(struct lws **, w, wsi->u.h2.child_list) {
+			lws_start_foreach_llp(struct lws **, w,
+					      wsi->h2.child_list) {
 				lwsl_info("   \\---- child %p\n", *w);
-			} lws_end_foreach_llp(w, u.h2.sibling_list);
+			} lws_end_foreach_llp(w, h2.sibling_list);
 			/* trigger closing of all of our http2 children first */
-			lws_start_foreach_llp(struct lws **, w, wsi->u.h2.child_list) {
+			lws_start_foreach_llp(struct lws **, w,
+					      wsi->h2.child_list) {
 				lwsl_info("   closing child %p\n", *w);
 				/* disconnect from siblings */
-				wsi2 = (*w)->u.h2.sibling_list;
-				(*w)->u.h2.sibling_list = NULL;
+				wsi2 = (*w)->h2.sibling_list;
+				(*w)->h2.sibling_list = NULL;
 				(*w)->socket_is_permanently_unusable = 1;
 				lws_close_free_wsi(*w, reason);
 				*w = wsi2;
 				continue;
-			} lws_end_foreach_llp(w, u.h2.sibling_list);
+			} lws_end_foreach_llp(w, h2.sibling_list);
 		}
 	}
 
 	if (wsi->upgraded_to_http2) {
 		/* remove pps */
-		struct lws_h2_protocol_send *w = wsi->u.h2.h2n->pps, *w1;
+		struct lws_h2_protocol_send *w = wsi->h2.h2n->pps, *w1;
 		while (w) {
-			w1 = wsi->u.h2.h2n->pps->next;
+			w1 = w->next;
 			free(w);
 			w = w1;
 		}
-		wsi->u.h2.h2n->pps = NULL;
+		wsi->h2.h2n->pps = NULL;
 	}
 
-	if (wsi->http2_substream && wsi->u.h2.parent_wsi) {
+	if (wsi->http2_substream && wsi->h2.parent_wsi) {
 		lwsl_info("  %p: disentangling from siblings\n", wsi);
 		lws_start_foreach_llp(struct lws **, w,
-				wsi->u.h2.parent_wsi->u.h2.child_list) {
+				wsi->h2.parent_wsi->h2.child_list) {
 			/* disconnect from siblings */
 			if (*w == wsi) {
-				wsi2 = (*w)->u.h2.sibling_list;
-				(*w)->u.h2.sibling_list = NULL;
+				wsi2 = (*w)->h2.sibling_list;
+				(*w)->h2.sibling_list = NULL;
 				*w = wsi2;
-				lwsl_info("  %p disentangled from sibling %p\n", wsi, wsi2);
+				lwsl_info("  %p disentangled from sibling %p\n",
+					  wsi, wsi2);
 				break;
 			}
-		} lws_end_foreach_llp(w, u.h2.sibling_list);
-		wsi->u.h2.parent_wsi->u.h2.child_count--;
-		wsi->u.h2.parent_wsi = NULL;
-		if (wsi->u.h2.pending_status_body)
-			lws_free_set_NULL(wsi->u.h2.pending_status_body);
+		} lws_end_foreach_llp(w, h2.sibling_list);
+		wsi->h2.parent_wsi->h2.child_count--;
+		wsi->h2.parent_wsi = NULL;
+		if (wsi->h2.pending_status_body)
+			lws_free_set_NULL(wsi->h2.pending_status_body);
 	}
 
-	if (wsi->upgraded_to_http2 && wsi->u.h2.h2n &&
-	    wsi->u.h2.h2n->rx_scratch)
-		lws_free_set_NULL(wsi->u.h2.h2n->rx_scratch);
+	if (wsi->upgraded_to_http2 && wsi->h2.h2n &&
+	    wsi->h2.h2n->rx_scratch)
+		lws_free_set_NULL(wsi->h2.h2n->rx_scratch);
 #endif
 
 	if (wsi->mode == LWSCM_RAW_FILEDESC) {
@@ -393,6 +472,8 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 					wsi->user_space, NULL, 0);
 		goto async_close;
 	}
+
+	wsi->state_pre_close = wsi->state;
 
 #ifdef LWS_WITH_CGI
 	if (wsi->mode == LWSCM_CGI) {
@@ -415,19 +496,7 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 #endif
 
 #if !defined(LWS_NO_CLIENT)
-	if (wsi->mode == LWSCM_HTTP_CLIENT ||
-	    wsi->mode == LWSCM_WSCL_WAITING_CONNECT ||
-	    wsi->mode == LWSCM_WSCL_WAITING_PROXY_REPLY ||
-	    wsi->mode == LWSCM_WSCL_ISSUE_HANDSHAKE ||
-	    wsi->mode == LWSCM_WSCL_ISSUE_HANDSHAKE2 ||
-	    wsi->mode == LWSCM_WSCL_WAITING_SSL ||
-	    wsi->mode == LWSCM_WSCL_WAITING_SERVER_REPLY ||
-	    wsi->mode == LWSCM_WSCL_WAITING_EXTENSION_CONNECT ||
-	    wsi->mode == LWSCM_WSCL_WAITING_SOCKS_GREETING_REPLY ||
-	    wsi->mode == LWSCM_WSCL_WAITING_SOCKS_CONNECT_REPLY ||
-	    wsi->mode == LWSCM_WSCL_WAITING_SOCKS_AUTH_REPLY)
-		if (wsi->u.hdr.stash)
-			lws_free_set_NULL(wsi->u.hdr.stash);
+	lws_client_stash_destroy(wsi);
 #endif
 
 	if (wsi->mode == LWSCM_RAW) {
@@ -439,8 +508,8 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 
 	if ((wsi->mode == LWSCM_HTTP_SERVING_ACCEPTED ||
 	     wsi->mode == LWSCM_HTTP2_SERVING) &&
-	    wsi->u.http.fop_fd != NULL) {
-		lws_vfs_file_close(&wsi->u.http.fop_fd);
+	    wsi->http.fop_fd != NULL) {
+		lws_vfs_file_close(&wsi->http.fop_fd);
 		wsi->vhost->protocols->callback(wsi,
 			LWS_CALLBACK_CLOSED_HTTP, wsi->user_space, NULL, 0);
 		wsi->told_user_closed = 1;
@@ -449,8 +518,6 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 	    reason == LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY ||
 	    wsi->state == LWSS_SHUTDOWN)
 		goto just_kill_connection;
-
-	wsi->state_pre_close = wsi->state;
 
 	switch (wsi->state_pre_close) {
 	case LWSS_DEAD_SOCKET:
@@ -461,7 +528,7 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 	case LWSS_AWAITING_CLOSE_ACK:
 		goto just_kill_connection;
 
-	case LWSS_FLUSHING_STORED_SEND_BEFORE_CLOSE:
+	case LWSS_FLUSHING_SEND_BEFORE_CLOSE:
 		if (wsi->trunc_len) {
 			lws_callback_on_writable(wsi);
 			return;
@@ -470,9 +537,10 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 		goto just_kill_connection;
 	default:
 		if (wsi->trunc_len) {
-			lwsl_info("%p: start FLUSHING_STORED_SEND_BEFORE_CLOSE\n", wsi);
-			wsi->state = LWSS_FLUSHING_STORED_SEND_BEFORE_CLOSE;
-			lws_set_timeout(wsi, PENDING_FLUSH_STORED_SEND_BEFORE_CLOSE, 5);
+			lwsl_info("%p: FLUSHING_STORED_SEND_BEFORE_CLOSE\n", wsi);
+			wsi->state = LWSS_FLUSHING_SEND_BEFORE_CLOSE;
+			lws_set_timeout(wsi,
+				PENDING_FLUSH_STORED_SEND_BEFORE_CLOSE, 5);
 			return;
 		}
 		break;
@@ -499,7 +567,8 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 	 * parent and just his ch1 aspect is closing?
 	 */
 
-	if (lws_ext_cb_active(wsi, LWS_EXT_CB_CHECK_OK_TO_REALLY_CLOSE, NULL, 0) > 0) {
+	if (lws_ext_cb_active(wsi, LWS_EXT_CB_CHECK_OK_TO_REALLY_CLOSE,
+			      NULL, 0) > 0) {
 		lwsl_ext("extension vetoed close\n");
 		return;
 	}
@@ -551,24 +620,20 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 	 * LWSS_AWAITING_CLOSE_ACK and will skip doing this a second time.
 	 */
 
-	if (wsi->state_pre_close == LWSS_ESTABLISHED &&
-	    (wsi->u.ws.close_in_ping_buffer_len || /* already a reason */
+	if (lws_state_is_ws(wsi->state_pre_close) &&
+	    (wsi->ws->close_in_ping_buffer_len || /* already a reason */
 	     (reason != LWS_CLOSE_STATUS_NOSTATUS &&
 	     (reason != LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY)))) {
 		lwsl_debug("sending close indication...\n");
 
 		/* if no prepared close reason, use 1000 and no aux data */
-		if (!wsi->u.ws.close_in_ping_buffer_len) {
-			wsi->u.ws.close_in_ping_buffer_len = 2;
-			wsi->u.ws.ping_payload_buf[LWS_PRE] =
+		if (!wsi->ws->close_in_ping_buffer_len) {
+			wsi->ws->close_in_ping_buffer_len = 2;
+			wsi->ws->ping_payload_buf[LWS_PRE] =
                                (reason >> 8) & 0xff;
-			wsi->u.ws.ping_payload_buf[LWS_PRE + 1] =
+			wsi->ws->ping_payload_buf[LWS_PRE + 1] =
 				reason & 0xff;
 		}
-
-#if defined (LWS_WITH_ESP8266)
-		wsi->close_is_pending_send_completion = 1;
-#endif
 
 		lwsl_debug("waiting for chance to send close\n");
 		wsi->waiting_to_send_close_frame = 1;
@@ -596,12 +661,16 @@ just_kill_connection:
 			   wsi->mode == LWSCM_WSCL_WAITING_CONNECT) &&
 			   !wsi->already_did_cce) {
 				wsi->vhost->protocols[0].callback(wsi,
-						LWS_CALLBACK_CLIENT_CONNECTION_ERROR,
+					LWS_CALLBACK_CLIENT_CONNECTION_ERROR,
 						wsi->user_space, NULL, 0);
 	}
 
 	if (wsi->mode & LWSCM_FLAG_IMPLIES_CALLBACK_CLOSED_CLIENT_HTTP) {
-		wsi->vhost->protocols[0].callback(wsi,
+		const struct lws_protocols *pro = wsi->protocol;
+
+		if (!wsi->protocol)
+			pro = &wsi->vhost->protocols[0];
+		pro->callback(wsi,
 					LWS_CALLBACK_CLOSED_CLIENT_HTTP,
 						  wsi->user_space, NULL, 0);
 		wsi->told_user_closed = 1;
@@ -622,35 +691,19 @@ just_kill_connection:
 	    wsi->state != LWSS_CLIENT_UNCONNECTED &&
 	    reason != LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY &&
 	    !wsi->socket_is_permanently_unusable) {
+
 #ifdef LWS_OPENSSL_SUPPORT
-		if (lws_is_ssl(wsi) && wsi->ssl) {
-			n = SSL_shutdown(wsi->ssl);
-			/*
-			 * If finished the SSL shutdown, then do socket
-			 * shutdown, else need to retry SSL shutdown
-			 */
-			switch (n) {
-			case 0:
-				lws_change_pollfd(wsi, LWS_POLLOUT, LWS_POLLIN);
-				break;
-			case 1:
-				n = shutdown(wsi->desc.sockfd, SHUT_WR);
-				break;
-			default:
-				if (SSL_want_read(wsi->ssl)) {
-					lws_change_pollfd(wsi, 0, LWS_POLLIN);
-					n = 0;
-					break;
-				}
-				if (SSL_want_write(wsi->ssl)) {
-					lws_change_pollfd(wsi, 0, LWS_POLLOUT);
-					n = 0;
-					break;
-				}
-				n = shutdown(wsi->desc.sockfd, SHUT_WR);
-				break;
-			}
-		} else
+	if (lws_is_ssl(wsi) && wsi->ssl) {
+		n = 0;
+		switch (lws_tls_shutdown(wsi)) {
+		case LWS_SSL_CAPABLE_DONE:
+		case LWS_SSL_CAPABLE_ERROR:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
+		case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
+		case LWS_SSL_CAPABLE_MORE_SERVICE:
+			break;
+		}
+	} else
 #endif
 		{
 			lwsl_info("%s: shutdown conn: %p (sock %d, state %d)\n",
@@ -676,7 +729,7 @@ just_kill_connection:
 		    lws_sockfd_valid(wsi->desc.sockfd) &&
 		    !LWS_LIBUV_ENABLED(context)) {
 			lws_change_pollfd(wsi, LWS_POLLOUT, LWS_POLLIN);
-			wsi->state = LWSS_SHUTDOWN;
+			wsi->state = (wsi->state & ~0x1f) | LWSS_SHUTDOWN;
 			lws_set_timeout(wsi, PENDING_TIMEOUT_SHUTDOWN_FLUSH,
 					context->timeout_secs);
 
@@ -708,72 +761,55 @@ just_kill_connection:
 	else
 		lws_same_vh_protocol_remove(wsi);
 
-#if defined(LWS_WITH_ESP8266)
-	espconn_disconnect(wsi->desc.sockfd);
-#endif
-
 	wsi->state = LWSS_DEAD_SOCKET;
-
 	lws_free_set_NULL(wsi->rxflow_buffer);
-	if (wsi->state_pre_close == LWSS_ESTABLISHED ||
-	    wsi->mode == LWSCM_WS_SERVING ||
-	    wsi->mode == LWSCM_WS_CLIENT) {
 
-		if (wsi->u.ws.rx_draining_ext) {
+	if (lws_state_is_ws(wsi->state_pre_close) ||
+	    wsi->mode == LWSCM_WS_SERVING || wsi->mode == LWSCM_WS_CLIENT) {
+
+		if (wsi->ws->rx_draining_ext) {
 			struct lws **w = &pt->rx_draining_ext_list;
 
-			wsi->u.ws.rx_draining_ext = 0;
+			wsi->ws->rx_draining_ext = 0;
 			/* remove us from context draining ext list */
 			while (*w) {
 				if (*w == wsi) {
-					*w = wsi->u.ws.rx_draining_ext_list;
+					*w = wsi->ws->rx_draining_ext_list;
 					break;
 				}
-				w = &((*w)->u.ws.rx_draining_ext_list);
+				w = &((*w)->ws->rx_draining_ext_list);
 			}
-			wsi->u.ws.rx_draining_ext_list = NULL;
+			wsi->ws->rx_draining_ext_list = NULL;
 		}
 
-		if (wsi->u.ws.tx_draining_ext) {
+		if (wsi->ws->tx_draining_ext) {
 			struct lws **w = &pt->tx_draining_ext_list;
 
-			wsi->u.ws.tx_draining_ext = 0;
+			wsi->ws->tx_draining_ext = 0;
 			/* remove us from context draining ext list */
 			while (*w) {
 				if (*w == wsi) {
-					*w = wsi->u.ws.tx_draining_ext_list;
+					*w = wsi->ws->tx_draining_ext_list;
 					break;
 				}
-				w = &((*w)->u.ws.tx_draining_ext_list);
+				w = &((*w)->ws->tx_draining_ext_list);
 			}
-			wsi->u.ws.tx_draining_ext_list = NULL;
+			wsi->ws->tx_draining_ext_list = NULL;
 		}
-		lws_free_set_NULL(wsi->u.ws.rx_ubuf);
+		lws_free_set_NULL(wsi->ws->rx_ubuf);
 
 		if (wsi->trunc_alloc)
 			/* not going to be completed... nuke it */
 			lws_free_set_NULL(wsi->trunc_alloc);
 
-		wsi->u.ws.ping_payload_len = 0;
-		wsi->u.ws.ping_pending_flag = 0;
+		wsi->ws->ping_payload_len = 0;
+		wsi->ws->ping_pending_flag = 0;
 	}
 
 	/* tell the user it's all over for this guy */
 
-	if (!wsi->told_user_closed &&
-	    wsi->mode != LWSCM_RAW && wsi->protocol &&
-	    wsi->protocol->callback &&
-	    (wsi->state_pre_close == LWSS_ESTABLISHED ||
-	     wsi->state_pre_close == LWSS_HTTP2_ESTABLISHED ||
-	     wsi->state_pre_close == LWSS_HTTP_BODY ||
-	     wsi->state_pre_close == LWSS_HTTP ||
-	     wsi->state_pre_close == LWSS_RETURNED_CLOSE_ALREADY ||
-	     wsi->state_pre_close == LWSS_AWAITING_CLOSE_ACK ||
-	     wsi->state_pre_close == LWSS_WAITING_TO_SEND_CLOSE_NOTIFICATION ||
-	     wsi->state_pre_close == LWSS_FLUSHING_STORED_SEND_BEFORE_CLOSE ||
-	    (wsi->mode == LWSCM_WS_CLIENT && wsi->state_pre_close == LWSS_HTTP) ||
-	    (wsi->mode == LWSCM_WS_SERVING && wsi->state_pre_close == LWSS_HTTP))) {
-		lwsl_debug("calling back CLOSED %d %d\n", wsi->mode, wsi->state);
+	if (wsi->protocol && !wsi->told_user_closed && wsi->protocol->callback &&
+	    wsi->mode != LWSCM_RAW && (wsi->state_pre_close & _LSF_CCB)) {
 		wsi->protocol->callback(wsi, LWS_CALLBACK_CLOSED,
 					wsi->user_space, NULL, 0);
 	} else if (wsi->mode == LWSCM_HTTP_SERVING_ACCEPTED) {
@@ -841,8 +877,9 @@ lws_close_free_wsi_final(struct lws *wsi)
 	}
 
 	/* outermost destroy notification for wsi (user_space still intact) */
-	wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_WSI_DESTROY,
-				          wsi->user_space, NULL, 0);
+	if (wsi->vhost)
+		wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_WSI_DESTROY,
+						  wsi->user_space, NULL, 0);
 
 #ifdef LWS_WITH_CGI
 	if (wsi->cgi) {
@@ -865,7 +902,7 @@ lws_close_free_wsi_final(struct lws *wsi)
 LWS_VISIBLE LWS_EXTERN const char *
 lws_get_urlarg_by_name(struct lws *wsi, const char *name, char *buf, int len)
 {
-	int n = 0, sl = strlen(name);
+	int n = 0, sl = (int)strlen(name);
 
 	while (lws_hdr_copy_fragment(wsi, buf, len,
 			  WSI_TOKEN_HTTP_URI_ARGS, n) >= 0) {
@@ -921,8 +958,8 @@ lws_get_addresses(struct lws_vhost *vh, void *ads, char *name,
 		if (strncmp(rip, "::ffff:", 7) == 0)
 			memmove(rip, rip + 7, strlen(rip) - 6);
 
-		getnameinfo((struct sockaddr *)ads,
-			    sizeof(struct sockaddr_in6), name, name_len, NULL, 0, 0);
+		getnameinfo((struct sockaddr *)ads, sizeof(struct sockaddr_in6),
+			    name, name_len, NULL, 0, 0);
 
 		return 0;
 	} else
@@ -994,7 +1031,7 @@ lws_get_peer_simple(struct lws *wsi, char *name, int namelen)
 
 #if defined(LWS_WITH_HTTP2)
 	if (wsi->http2_substream)
-		wsi = wsi->u.h2.parent_wsi;
+		wsi = wsi->h2.parent_wsi;
 #endif
 
 	if (wsi->parent_carries_io)
@@ -1022,11 +1059,7 @@ lws_get_peer_simple(struct lws *wsi, char *name, int namelen)
 
 	return lws_plat_inet_ntop(af, q, name, namelen);
 #else
-#if defined(LWS_WITH_ESP8266)
-	return lws_plat_get_peer_simple(wsi, name, namelen);
-#else
 	return NULL;
-#endif
 #endif
 }
 #endif
@@ -1122,8 +1155,8 @@ lws_get_network_wsi(struct lws *wsi)
 	if (!wsi->http2_substream)
 		return wsi;
 
-	while (wsi->u.h2.parent_wsi)
-		wsi = wsi->u.h2.parent_wsi;
+	while (wsi->h2.parent_wsi)
+		wsi = wsi->h2.parent_wsi;
 #endif
 
 	return wsi;
@@ -1209,6 +1242,29 @@ lws_callback_vhost_protocols(struct lws *wsi, int reason, void *in, int len)
 	return 0;
 }
 
+LWS_VISIBLE LWS_EXTERN int
+lws_callback_vhost_protocols_vhost(struct lws_vhost *vh, int reason, void *in,
+				   size_t len)
+{
+	int n;
+	struct lws *wsi = lws_zalloc(sizeof(*wsi), "fake wsi");
+
+	wsi->context = vh->context;
+	wsi->vhost = vh;
+
+	for (n = 0; n < wsi->vhost->count_protocols; n++) {
+		wsi->protocol = &vh->protocols[n];
+		if (wsi->protocol->callback(wsi, reason, NULL, in, len)) {
+			lws_free(wsi);
+			return 1;
+		}
+	}
+
+	lws_free(wsi);
+
+	return 0;
+}
+
 LWS_VISIBLE LWS_EXTERN void
 lws_set_fops(struct lws_context *context, const struct lws_plat_file_ops *fops)
 {
@@ -1281,7 +1337,7 @@ lws_vfs_select_fops(const struct lws_plat_file_ops *fops, const char *vfs_path,
 		pf = fops->next;
 		while (pf) {
 			n = 0;
-			while (n < ARRAY_SIZE(pf->fi) && pf->fi[n].sig) {
+			while (n < (int)ARRAY_SIZE(pf->fi) && pf->fi[n].sig) {
 				if (p >= vfs_path + pf->fi[n].len)
 					if (!strncmp(p - (pf->fi[n].len - 1),
 						    pf->fi[n].sig,
@@ -1327,10 +1383,22 @@ lws_now_secs(void)
 	return tv.tv_sec;
 }
 
+LWS_VISIBLE LWS_EXTERN int
+lws_compare_time_t(struct lws_context *context, time_t t1, time_t t2)
+{
+	if (t1 < context->time_discontiguity)
+		t1 += context->time_fixup;
+
+	if (t2 < context->time_discontiguity)
+		t2 += context->time_fixup;
+
+	return (int)(t1 - t2);
+}
+
 
 #if LWS_POSIX
 
-LWS_VISIBLE int
+LWS_VISIBLE lws_sockfd_type
 lws_get_socket_fd(struct lws *wsi)
 {
 	if (!wsi)
@@ -1440,10 +1508,61 @@ lws_rx_flow_allow_all_protocol(const struct lws_context *context,
 	}
 }
 
+int
+lws_broadcast(struct lws_context *context, int reason, void *in, size_t len)
+{
+	struct lws_vhost *v = context->vhost_list;
+	struct lws wsi;
+	int n, ret = 0;
+
+	memset(&wsi, 0, sizeof(wsi));
+	wsi.context = context;
+
+	while (v) {
+		const struct lws_protocols *p = v->protocols;
+		wsi.vhost = v;
+
+		for (n = 0; n < v->count_protocols; n++) {
+			wsi.protocol = p;
+			if (p->callback &&
+			    p->callback(&wsi, reason, NULL, in, len))
+				ret |= 1;
+			p++;
+		}
+		v = v->vhost_next;
+	}
+
+	return ret;
+}
+
 LWS_VISIBLE extern const char *
 lws_canonical_hostname(struct lws_context *context)
 {
 	return (const char *)context->canonical_hostname;
+}
+
+LWS_VISIBLE LWS_EXTERN const char *
+lws_get_vhost_name(struct lws_vhost *vhost)
+{
+	return vhost->name;
+}
+
+LWS_VISIBLE LWS_EXTERN int
+lws_get_vhost_port(struct lws_vhost *vhost)
+{
+	return vhost->listen_port;
+}
+
+LWS_VISIBLE LWS_EXTERN void *
+lws_get_vhost_user(struct lws_vhost *vhost)
+{
+	return vhost->user;
+}
+
+LWS_VISIBLE LWS_EXTERN const char *
+lws_get_vhost_iface(struct lws_vhost *vhost)
+{
+	return vhost->iface;
 }
 
 int user_callback_handle_rxflow(lws_callback_function callback_function,
@@ -1462,15 +1581,9 @@ int user_callback_handle_rxflow(lws_callback_function callback_function,
 	return n;
 }
 
-#if defined(LWS_WITH_ESP8266)
-#undef strchr
-#define strchr ets_strchr
-#endif
-
 LWS_VISIBLE int
 lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 {
-#if !defined(LWS_WITH_ESP8266)
 	char *p;
 	char authstring[96];
 
@@ -1489,7 +1602,7 @@ lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 
 		strncpy(authstring, proxy, p - proxy);
 		// null termination not needed on input
-		if (lws_b64_encode_string(authstring, (p - proxy),
+		if (lws_b64_encode_string(authstring, lws_ptr_diff(p, proxy),
 				vhost->proxy_basic_auth_token,
 		    sizeof vhost->proxy_basic_auth_token) < 0)
 			goto auth_too_long;
@@ -1524,7 +1637,7 @@ lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 
 auth_too_long:
 	lwsl_err("proxy auth too long\n");
-#endif
+
 	return -1;
 }
 
@@ -1532,7 +1645,6 @@ auth_too_long:
 LWS_VISIBLE int
 lws_set_socks(struct lws_vhost *vhost, const char *socks)
 {
-#if !defined(LWS_WITH_ESP8266)
 	char *p_at, *p_colon;
 	char user[96];
 	char password[96];
@@ -1597,7 +1709,6 @@ lws_set_socks(struct lws_vhost *vhost, const char *socks)
 	return 0;
 
 bail:
-#endif
 	return -1;
 }
 #endif
@@ -1612,22 +1723,22 @@ LWS_VISIBLE int
 lws_is_final_fragment(struct lws *wsi)
 {
        lwsl_info("%s: final %d, rx pk length %ld, draining %ld\n", __func__,
-			wsi->u.ws.final, (long)wsi->u.ws.rx_packet_length,
-			(long)wsi->u.ws.rx_draining_ext);
-	return wsi->u.ws.final && !wsi->u.ws.rx_packet_length &&
-	       !wsi->u.ws.rx_draining_ext;
+			wsi->ws->final, (long)wsi->ws->rx_packet_length,
+			(long)wsi->ws->rx_draining_ext);
+	return wsi->ws->final && !wsi->ws->rx_packet_length &&
+	       !wsi->ws->rx_draining_ext;
 }
 
 LWS_VISIBLE int
 lws_is_first_fragment(struct lws *wsi)
 {
-	return wsi->u.ws.first_fragment;
+	return wsi->ws->first_fragment;
 }
 
 LWS_VISIBLE unsigned char
 lws_get_reserved_bits(struct lws *wsi)
 {
-	return wsi->u.ws.rsv;
+	return wsi->ws->rsv;
 }
 
 int
@@ -1639,7 +1750,8 @@ lws_ensure_user_space(struct lws *wsi)
 	/* allocate the per-connection user memory (if any) */
 
 	if (wsi->protocol->per_session_data_size && !wsi->user_space) {
-		wsi->user_space = lws_zalloc(wsi->protocol->per_session_data_size, "user space");
+		wsi->user_space = lws_zalloc(
+			    wsi->protocol->per_session_data_size, "user space");
 		if (wsi->user_space == NULL) {
 			lwsl_err("%s: OOM\n", __func__);
 			return 1;
@@ -1704,10 +1816,14 @@ lwsl_timestamp(int level, char *p, int len)
 					(int)(now % 10000), log_level_names[n]);
 		return n;
 	}
+#else
+	p[0] = '\0';
 #endif
+
 	return 0;
 }
 
+#ifndef LWS_PLAT_OPTEE
 static const char * const colours[] = {
 	"[31;1m", /* LLL_ERR */
 	"[36;1m", /* LLL_WARN */
@@ -1722,17 +1838,14 @@ static const char * const colours[] = {
 	"[30;1m", /* LLL_USER */
 };
 
-#ifndef LWS_PLAT_OPTEE
 LWS_VISIBLE void lwsl_emit_stderr(int level, const char *line)
 {
-#if !defined(LWS_WITH_ESP8266)
 	char buf[50];
-	static char tty;
+	static char tty = 3;
 	int n, m = ARRAY_SIZE(colours) - 1;
 
 	if (!tty)
 		tty = isatty(2) | 2;
-
 	lwsl_timestamp(level, buf, sizeof(buf));
 
 	if (tty == 3) {
@@ -1746,17 +1859,12 @@ LWS_VISIBLE void lwsl_emit_stderr(int level, const char *line)
 		fprintf(stderr, "%c%s%s%s%c[0m", 27, colours[m], buf, line, 27);
 	} else
 		fprintf(stderr, "%s%s", buf, line);
-#endif
 }
 #endif
 
 LWS_VISIBLE void _lws_logv(int filter, const char *format, va_list vl)
 {
-#if defined(LWS_WITH_ESP8266)
-	char buf[128];
-#else
 	char buf[256];
-#endif
 	int n;
 
 	if (!(log_level & filter))
@@ -1764,15 +1872,11 @@ LWS_VISIBLE void _lws_logv(int filter, const char *format, va_list vl)
 
 	n = vsnprintf(buf, sizeof(buf) - 1, format, vl);
 	(void)n;
-#if defined(LWS_WITH_ESP8266)
-	buf[sizeof(buf) - 1] = '\0';
-#else
 	/* vnsprintf returns what it would have written, even if truncated */
-	if (n > sizeof(buf) - 1)
+	if (n > (int)sizeof(buf) - 1)
 		n = sizeof(buf) - 1;
 	if (n > 0)
 		buf[n] = '\0';
-#endif
 
 	lwsl_emit(filter, buf);
 }
@@ -1861,7 +1965,7 @@ lws_is_ssl(struct lws *wsi)
 }
 
 #ifdef LWS_OPENSSL_SUPPORT
-LWS_VISIBLE SSL*
+LWS_VISIBLE lws_tls_conn*
 lws_get_ssl(struct lws *wsi)
 {
 	return wsi->ssl;
@@ -1893,7 +1997,6 @@ LWS_VISIBLE void
 lws_union_transition(struct lws *wsi, enum connection_mode mode)
 {
 	lwsl_debug("%s: %p: mode %d\n", __func__, wsi, mode);
-	memset(&wsi->u, 0, sizeof(wsi->u));
 	wsi->mode = mode;
 }
 
@@ -1976,13 +2079,13 @@ lws_clear_child_pending_on_writable(struct lws *wsi)
 LWS_VISIBLE LWS_EXTERN int
 lws_get_close_length(struct lws *wsi)
 {
-	return wsi->u.ws.close_in_ping_buffer_len;
+	return wsi->ws->close_in_ping_buffer_len;
 }
 
 LWS_VISIBLE LWS_EXTERN unsigned char *
 lws_get_close_payload(struct lws *wsi)
 {
-	return &wsi->u.ws.ping_payload_buf[LWS_PRE];
+	return &wsi->ws->ping_payload_buf[LWS_PRE];
 }
 
 LWS_VISIBLE LWS_EXTERN void
@@ -1990,11 +2093,11 @@ lws_close_reason(struct lws *wsi, enum lws_close_status status,
 		 unsigned char *buf, size_t len)
 {
 	unsigned char *p, *start;
-	int budget = sizeof(wsi->u.ws.ping_payload_buf) - LWS_PRE;
+	int budget = sizeof(wsi->ws->ping_payload_buf) - LWS_PRE;
 
 	assert(wsi->mode == LWSCM_WS_SERVING || wsi->mode == LWSCM_WS_CLIENT);
 
-	start = p = &wsi->u.ws.ping_payload_buf[LWS_PRE];
+	start = p = &wsi->ws->ping_payload_buf[LWS_PRE];
 
 	*p++ = (((int)status) >> 8) & 0xff;
 	*p++ = ((int)status) & 0xff;
@@ -2003,7 +2106,7 @@ lws_close_reason(struct lws *wsi, enum lws_close_status status,
 		while (len-- && p < start + budget)
 			*p++ = *buf++;
 
-	wsi->u.ws.close_in_ping_buffer_len = p - start;
+	wsi->ws->close_in_ping_buffer_len = lws_ptr_diff(p, start);
 }
 
 LWS_EXTERN int
@@ -2169,7 +2272,7 @@ lws_parse_uri(char *p, const char **prot, const char **ads, int *port,
  * extensions disabled.
  */
 
-int
+LWS_VISIBLE int
 lws_extension_callback_pm_deflate(struct lws_context *context,
                                   const struct lws_extension *ext,
                                   struct lws *wsi,
@@ -2281,8 +2384,8 @@ lws_socket_bind(struct lws_vhost *vhost, lws_sockfd_type sockfd, int port,
 #endif
 #if defined(LWS_WITH_IPV6)
 		port = (sin.ss_family == AF_INET6) ?
-				  ntohs(((struct sockaddr_in6 *) &sin)->sin6_port) :
-				  ntohs(((struct sockaddr_in *) &sin)->sin_port);
+			ntohs(((struct sockaddr_in6 *) &sin)->sin6_port) :
+			ntohs(((struct sockaddr_in *) &sin)->sin_port);
 #else
 		{
 			struct sockaddr_in sain;
@@ -2368,7 +2471,8 @@ lws_get_addr_scope(const char *ipaddr)
 		while (adapter && !found) {
 			addr = adapter->FirstUnicastAddress;
 			while (addr && !found) {
-				if (addr->Address.lpSockaddr->sa_family == AF_INET6) {
+				if (addr->Address.lpSockaddr->sa_family ==
+				    AF_INET6) {
 					sockaddr = (struct sockaddr_in6 *)
 						(addr->Address.lpSockaddr);
 
@@ -2400,11 +2504,10 @@ lws_restart_ws_ping_pong_timer(struct lws *wsi)
 {
 	if (!wsi->context->ws_ping_pong_interval)
 		return;
-	if (wsi->state != LWSS_ESTABLISHED)
+	if (!lws_state_is_ws(wsi->state))
 		return;
 
-	wsi->u.ws.time_next_ping_check = (time_t)lws_now_secs() +
-				    wsi->context->ws_ping_pong_interval;
+	wsi->ws->time_next_ping_check = (time_t)lws_now_secs();
 }
 
 static const char *hex = "0123456789ABCDEF";
@@ -2570,7 +2673,7 @@ lws_snprintf(char *str, size_t size, const char *format, ...)
 	va_end(ap);
 
 	if (n >= (int)size)
-		return size;
+		return (int)size;
 
 	return n;
 }
@@ -2898,63 +3001,117 @@ lws_stats_log_dump(struct lws_context *context)
 
 	lwsl_notice("\n");
 	lwsl_notice("LWS internal statistics dump ----->\n");
-	lwsl_notice("LWSSTATS_C_CONNECTIONS:                     %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_CONNECTIONS));
-	lwsl_notice("LWSSTATS_C_API_CLOSE:                       %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_API_CLOSE));
-	lwsl_notice("LWSSTATS_C_API_READ:                        %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_API_READ));
-	lwsl_notice("LWSSTATS_C_API_LWS_WRITE:                   %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_API_LWS_WRITE));
-	lwsl_notice("LWSSTATS_C_API_WRITE:                       %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_API_WRITE));
-	lwsl_notice("LWSSTATS_C_WRITE_PARTIALS:                  %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_WRITE_PARTIALS));
-	lwsl_notice("LWSSTATS_C_WRITEABLE_CB_REQ:                %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_WRITEABLE_CB_REQ));
-	lwsl_notice("LWSSTATS_C_WRITEABLE_CB_EFF_REQ:            %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_WRITEABLE_CB_EFF_REQ));
-	lwsl_notice("LWSSTATS_C_WRITEABLE_CB:                    %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_WRITEABLE_CB));
-	lwsl_notice("LWSSTATS_C_SSL_CONNECTIONS_ACCEPT_SPIN:     %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_SSL_CONNECTIONS_ACCEPT_SPIN));
-	lwsl_notice("LWSSTATS_C_SSL_CONNECTIONS_FAILED:          %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_SSL_CONNECTIONS_FAILED));
-	lwsl_notice("LWSSTATS_C_SSL_CONNECTIONS_ACCEPTED:        %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_SSL_CONNECTIONS_ACCEPTED));
-	lwsl_notice("LWSSTATS_C_SSL_CONNS_HAD_RX:                %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_SSL_CONNS_HAD_RX));
-	lwsl_notice("LWSSTATS_C_PEER_LIMIT_AH_DENIED:            %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_PEER_LIMIT_AH_DENIED));
-	lwsl_notice("LWSSTATS_C_PEER_LIMIT_WSI_DENIED:           %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_PEER_LIMIT_WSI_DENIED));
+	lwsl_notice("LWSSTATS_C_CONNECTIONS:                     %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_CONNECTIONS));
+	lwsl_notice("LWSSTATS_C_API_CLOSE:                       %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_API_CLOSE));
+	lwsl_notice("LWSSTATS_C_API_READ:                        %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_API_READ));
+	lwsl_notice("LWSSTATS_C_API_LWS_WRITE:                   %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_API_LWS_WRITE));
+	lwsl_notice("LWSSTATS_C_API_WRITE:                       %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_API_WRITE));
+	lwsl_notice("LWSSTATS_C_WRITE_PARTIALS:                  %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_WRITE_PARTIALS));
+	lwsl_notice("LWSSTATS_C_WRITEABLE_CB_REQ:                %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_WRITEABLE_CB_REQ));
+	lwsl_notice("LWSSTATS_C_WRITEABLE_CB_EFF_REQ:            %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_WRITEABLE_CB_EFF_REQ));
+	lwsl_notice("LWSSTATS_C_WRITEABLE_CB:                    %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_WRITEABLE_CB));
+	lwsl_notice("LWSSTATS_C_SSL_CONNECTIONS_ACCEPT_SPIN:     %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_SSL_CONNECTIONS_ACCEPT_SPIN));
+	lwsl_notice("LWSSTATS_C_SSL_CONNECTIONS_FAILED:          %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_SSL_CONNECTIONS_FAILED));
+	lwsl_notice("LWSSTATS_C_SSL_CONNECTIONS_ACCEPTED:        %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_SSL_CONNECTIONS_ACCEPTED));
+	lwsl_notice("LWSSTATS_C_SSL_CONNS_HAD_RX:                %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_SSL_CONNS_HAD_RX));
+	lwsl_notice("LWSSTATS_C_PEER_LIMIT_AH_DENIED:            %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_PEER_LIMIT_AH_DENIED));
+	lwsl_notice("LWSSTATS_C_PEER_LIMIT_WSI_DENIED:           %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_PEER_LIMIT_WSI_DENIED));
 
-	lwsl_notice("LWSSTATS_C_TIMEOUTS:                        %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_TIMEOUTS));
-	lwsl_notice("LWSSTATS_C_SERVICE_ENTRY:                   %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_C_SERVICE_ENTRY));
-	lwsl_notice("LWSSTATS_B_READ:                            %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_B_READ));
-	lwsl_notice("LWSSTATS_B_WRITE:                           %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_B_WRITE));
-	lwsl_notice("LWSSTATS_B_PARTIALS_ACCEPTED_PARTS:         %8llu\n", (unsigned long long)lws_stats_get(context, LWSSTATS_B_PARTIALS_ACCEPTED_PARTS));
-	lwsl_notice("LWSSTATS_MS_SSL_CONNECTIONS_ACCEPTED_DELAY: %8llums\n", (unsigned long long)lws_stats_get(context, LWSSTATS_MS_SSL_CONNECTIONS_ACCEPTED_DELAY) / 1000);
+	lwsl_notice("LWSSTATS_C_TIMEOUTS:                        %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_TIMEOUTS));
+	lwsl_notice("LWSSTATS_C_SERVICE_ENTRY:                   %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_C_SERVICE_ENTRY));
+	lwsl_notice("LWSSTATS_B_READ:                            %8llu\n",
+		(unsigned long long)lws_stats_get(context, LWSSTATS_B_READ));
+	lwsl_notice("LWSSTATS_B_WRITE:                           %8llu\n",
+		(unsigned long long)lws_stats_get(context, LWSSTATS_B_WRITE));
+	lwsl_notice("LWSSTATS_B_PARTIALS_ACCEPTED_PARTS:         %8llu\n",
+		(unsigned long long)lws_stats_get(context,
+					LWSSTATS_B_PARTIALS_ACCEPTED_PARTS));
+	lwsl_notice("LWSSTATS_MS_SSL_CONNECTIONS_ACCEPTED_DELAY: %8llums\n",
+		(unsigned long long)lws_stats_get(context,
+			LWSSTATS_MS_SSL_CONNECTIONS_ACCEPTED_DELAY) / 1000);
 	if (lws_stats_get(context, LWSSTATS_C_SSL_CONNECTIONS_ACCEPTED))
 		lwsl_notice("  Avg accept delay:                         %8llums\n",
-			(unsigned long long)(lws_stats_get(context, LWSSTATS_MS_SSL_CONNECTIONS_ACCEPTED_DELAY) /
-			lws_stats_get(context, LWSSTATS_C_SSL_CONNECTIONS_ACCEPTED)) / 1000);
-	lwsl_notice("LWSSTATS_MS_SSL_RX_DELAY:                   %8llums\n", (unsigned long long)lws_stats_get(context, LWSSTATS_MS_SSL_RX_DELAY) / 1000);
+			(unsigned long long)(lws_stats_get(context,
+				LWSSTATS_MS_SSL_CONNECTIONS_ACCEPTED_DELAY) /
+					lws_stats_get(context,
+				LWSSTATS_C_SSL_CONNECTIONS_ACCEPTED)) / 1000);
+	lwsl_notice("LWSSTATS_MS_SSL_RX_DELAY:                   %8llums\n",
+			(unsigned long long)lws_stats_get(context,
+					LWSSTATS_MS_SSL_RX_DELAY) / 1000);
 	if (lws_stats_get(context, LWSSTATS_C_SSL_CONNS_HAD_RX))
 		lwsl_notice("  Avg accept-rx delay:                      %8llums\n",
-			(unsigned long long)(lws_stats_get(context, LWSSTATS_MS_SSL_RX_DELAY) /
-			lws_stats_get(context, LWSSTATS_C_SSL_CONNS_HAD_RX)) / 1000);
+			(unsigned long long)(lws_stats_get(context,
+					LWSSTATS_MS_SSL_RX_DELAY) /
+			lws_stats_get(context,
+					LWSSTATS_C_SSL_CONNS_HAD_RX)) / 1000);
 
 	lwsl_notice("LWSSTATS_MS_WRITABLE_DELAY:                 %8lluus\n",
-			(unsigned long long)lws_stats_get(context, LWSSTATS_MS_WRITABLE_DELAY));
+			(unsigned long long)lws_stats_get(context,
+					LWSSTATS_MS_WRITABLE_DELAY));
 	lwsl_notice("LWSSTATS_MS_WORST_WRITABLE_DELAY:           %8lluus\n",
-				(unsigned long long)lws_stats_get(context, LWSSTATS_MS_WORST_WRITABLE_DELAY));
+				(unsigned long long)lws_stats_get(context,
+					LWSSTATS_MS_WORST_WRITABLE_DELAY));
 	if (lws_stats_get(context, LWSSTATS_C_WRITEABLE_CB))
 		lwsl_notice("  Avg writable delay:                       %8lluus\n",
-			(unsigned long long)(lws_stats_get(context, LWSSTATS_MS_WRITABLE_DELAY) /
+			(unsigned long long)(lws_stats_get(context,
+					LWSSTATS_MS_WRITABLE_DELAY) /
 			lws_stats_get(context, LWSSTATS_C_WRITEABLE_CB)));
-	lwsl_notice("Simultaneous SSL restriction:               %8d/%d/%d\n", context->simultaneous_ssl,
-		context->simultaneous_ssl_restriction, context->ssl_gate_accepts);
+	lwsl_notice("Simultaneous SSL restriction:               %8d/%d/%d\n",
+			context->simultaneous_ssl,
+			context->simultaneous_ssl_restriction,
+			context->ssl_gate_accepts);
 
-	lwsl_notice("Live wsi:                                   %8d\n", context->count_wsi_allocated);
+	lwsl_notice("Live wsi:                                   %8d\n",
+			context->count_wsi_allocated);
 
 	context->updated = 1;
 
 	while (v) {
 		if (v->lserv_wsi) {
 
-			struct lws_context_per_thread *pt = &context->pt[(int)v->lserv_wsi->tsi];
+			struct lws_context_per_thread *pt =
+					&context->pt[(int)v->lserv_wsi->tsi];
 			struct lws_pollfd *pfd;
 
 			pfd = &pt->fds[v->lserv_wsi->position_in_fds_table];
 
 			lwsl_notice("  Listen port %d actual POLLIN:   %d\n",
-					v->listen_port, (int)pfd->events & LWS_POLLIN);
+				    v->listen_port,
+				    (int)pfd->events & LWS_POLLIN);
 		}
 
 		v = v->vhost_next;
@@ -2976,7 +3133,7 @@ lws_stats_log_dump(struct lws_context *context)
 		wl = pt->ah_wait_list;
 		while (wl) {
 			m++;
-			wl = wl->u.hdr.ah_wait_list;
+			wl = wl->ah_wait_list;
 		}
 
 		lwsl_notice("  AH wait list count / actual:      %d / %d\n",
@@ -3004,7 +3161,8 @@ lws_stats_log_dump(struct lws_context *context)
 		for (n = 0; n < (int)context->pl_hash_elements; n++) {
 			char buf[72];
 
-			lws_start_foreach_llp(struct lws_peer **, peer, context->pl_hash_table[n]) {
+			lws_start_foreach_llp(struct lws_peer **, peer,
+					      context->pl_hash_table[n]) {
 				struct lws_peer *df = *peer;
 
 				if (!lws_plat_inet_ntop(df->af, df->addr, buf,

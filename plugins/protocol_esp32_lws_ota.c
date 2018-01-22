@@ -33,6 +33,7 @@ struct per_session_data__esplws_ota {
 	esp_ota_handle_t otahandle;
 	const esp_partition_t *part;
 	long file_length;
+	long last_rep;
 	nvs_handle nvh;
 	TimerHandle_t reboot_timer;
 };
@@ -117,6 +118,7 @@ ota_file_upload_cb(void *data, const char *name, const char *filename,
 		}
 
 		pss->file_length = 0;
+		pss->last_rep = -1;
 		break;
 
 	case LWS_UFS_FINAL_CONTENT:
@@ -126,9 +128,11 @@ ota_file_upload_cb(void *data, const char *name, const char *filename,
 			return 1;
 		}
 
-		lwsl_notice("writing 0x%lx... 0x%lx\n",
-			   pss->part->address + pss->file_length,
-			   pss->part->address + pss->file_length + len);
+		if ((pss->file_length & ~0xffff) != (pss->last_rep & ~0xffff)) {
+			lwsl_notice("writing 0x%lx...\n",
+					pss->part->address + pss->file_length);
+			pss->last_rep = pss->file_length;
+		}
 		if (esp_ota_write(pss->otahandle, buf, len) != ESP_OK) {
 			lwsl_err("OTA: Failed to write\n");
 			return 1;
@@ -192,8 +196,8 @@ callback_esplws_ota(struct lws *wsi, enum lws_callback_reasons reason,
 
 	case LWS_CALLBACK_HTTP_BODY:
 		/* create the POST argument parser if not already existing */
-		//lwsl_notice("LWS_CALLBACK_HTTP_BODY (ota) %d %d %p\n", (int)pss->file_length, (int)len, pss->spa);
-		lws_set_timeout(wsi, PENDING_TIMEOUT_HTTP_CONTENT, 5);
+		// lwsl_notice("LWS_CALLBACK_HTTP_BODY (ota) %d %d %p\n", (int)pss->file_length, (int)len, pss->spa);
+		lws_set_timeout(wsi, PENDING_TIMEOUT_HTTP_CONTENT, 30);
 		if (!pss->spa) {
 			pss->spa = lws_spa_create(wsi, ota_param_names,
 					ARRAY_SIZE(ota_param_names), 4096,

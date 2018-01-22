@@ -241,13 +241,13 @@ lws_fops_zip_scan(lws_fops_zip_t priv, const char *name, int len)
 		if (priv->hdr.filename_len != len)
 			goto next;
 
-		if (len >= sizeof(buf) - 1)
+		if (len >= (int)sizeof(buf) - 1)
 			return LWS_FZ_ERR_NAME_TOO_LONG;
 
 		if (priv->zip_fop_fd->fops->LWS_FOP_READ(priv->zip_fop_fd,
 							&amount, buf, len))
 			return LWS_FZ_ERR_NAME_READ;
-		if (amount != len)
+		if ((int)amount != len)
 			return LWS_FZ_ERR_NAME_READ;
 
 		buf[len] = '\0';
@@ -348,7 +348,7 @@ lws_fops_zip_open(const struct lws_plat_file_ops *fops, const char *vfs_path,
 
 	m = sizeof(rp) - 1;
 	if ((vpath - vfs_path - 1) < m)
-		m = vpath - vfs_path - 1;
+		m = lws_ptr_diff(vpath, vfs_path) - 1;
 	strncpy(rp, vfs_path, m);
 	rp[m] = '\0';
 
@@ -363,7 +363,7 @@ lws_fops_zip_open(const struct lws_plat_file_ops *fops, const char *vfs_path,
 	if (*vpath == '/')
 		vpath++;
 
-	m = lws_fops_zip_scan(priv, vpath, strlen(vpath));
+	m = lws_fops_zip_scan(priv, vpath, (int)strlen(vpath));
 	if (m) {
 		lwsl_err("unable to find record matching '%s' %d\n", vpath, m);
 		goto bail2;
@@ -565,7 +565,7 @@ spin:
 		switch (ret) {
 		case Z_NEED_DICT:
 			ret = Z_DATA_ERROR;
-			/* and fall through */
+			/* fallthru */
 		case Z_DATA_ERROR:
 		case Z_MEM_ERROR:
 

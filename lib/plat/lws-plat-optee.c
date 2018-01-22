@@ -4,6 +4,29 @@
  * included from libwebsockets.c for OPTEE builds
  */
 
+int
+lws_plat_socket_offset(void)
+{
+	return 0;
+}
+
+int
+lws_plat_pipe_create(struct lws *wsi)
+{
+	return 1;
+}
+
+int
+lws_plat_pipe_signal(struct lws *wsi)
+{
+	return 1;
+}
+
+void
+lws_plat_pipe_close(struct lws *wsi)
+{
+}
+
 void TEE_GenerateRandom(void *randomBuffer, uint32_t randomBufferLen);
 
 unsigned long long time_in_microseconds(void)
@@ -22,6 +45,19 @@ lws_get_random(struct lws_context *context, void *buf, int len)
 LWS_VISIBLE int
 lws_send_pipe_choked(struct lws *wsi)
 {
+	struct lws *wsi_eff = wsi;
+
+#if defined(LWS_WITH_HTTP2)
+	wsi_eff = lws_get_network_wsi(wsi);
+#endif
+
+	/* the fact we checked implies we avoided back-to-back writes */
+	wsi_eff->could_have_pending = 0;
+
+	/* treat the fact we got a truncated send pending as if we're choked */
+	if (wsi_eff->trunc_len)
+		return 1;
+
 #if 0
 	struct lws_pollfd fds;
 
@@ -52,32 +88,6 @@ lws_poll_listen_fd(struct lws_pollfd *fd)
 	return 0;
 }
 
-LWS_VISIBLE void
-lws_cancel_service_pt(struct lws *wsi)
-{
-#if 0
-	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
-	char buf = 0;
-
-	if (write(pt->dummy_pipe_fds[1], &buf, sizeof(buf)) != 1)
-		lwsl_err("Cannot write to dummy pipe");
-#endif
-}
-
-LWS_VISIBLE void
-lws_cancel_service(struct lws_context *context)
-{
-#if 0
-	struct lws_context_per_thread *pt = &context->pt[0];
-	char buf = 0, m = context->count_threads;
-
-	while (m--) {
-		if (write(pt->dummy_pipe_fds[1], &buf, sizeof(buf)) != 1)
-			lwsl_err("Cannot write to dummy pipe");
-		pt++;
-	}
-#endif
-}
 #if 0
 LWS_VISIBLE void lwsl_emit_syslog(int level, const char *line)
 {
@@ -153,7 +163,7 @@ faked_service:
 			c = n;
 
 	/* any socket with events to service? */
-	for (n = 0; n < pt->fds_count && c; n++) {
+	for (n = 0; n < (int)pt->fds_count && c; n++) {
 		if (!pt->fds[n].revents)
 			continue;
 
@@ -270,8 +280,8 @@ lws_plat_inet_pton(int af, const char *src, void *dst)
 }
 
 LWS_VISIBLE lws_fop_fd_t
-_lws_plat_file_open(lws_plat_file_open(struct lws_plat_file_ops *fops,
-		    const char *filename, lws_fop_flags_t *flags)
+_lws_plat_file_open(const struct lws_plat_file_ops *fops,
+		    const char *filename, const char *vpath, lws_fop_flags_t *flags)
 {
 	return NULL;
 }
@@ -327,4 +337,29 @@ lws_plat_init(struct lws_context *context,
 #endif
 
 	return 0;
+}
+
+LWS_VISIBLE int
+lws_plat_write_cert(struct lws_vhost *vhost, int is_key, int fd, void *buf,
+			int len)
+{
+	return 1;
+}
+
+LWS_VISIBLE int
+lws_plat_write_file(const char *filename, void *buf, int len)
+{
+	return 1;
+}
+
+LWS_VISIBLE int
+lws_plat_read_file(const char *filename, void *buf, int len)
+{
+	return -1;
+}
+
+LWS_VISIBLE int
+lws_plat_recommended_rsa_bits(void)
+{
+	return 4096;
 }

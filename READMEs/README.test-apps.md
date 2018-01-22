@@ -2,7 +2,7 @@ Overview of lws test apps
 =========================
 
 Are you building a client?  You just need to look at the test client
-[libwebsockets-test-client](test-apps/test-client.c).
+[libwebsockets-test-client](../test-apps/test-client.c).
 
 If you are building a standalone server, there are three choices, in order of
 preferability.
@@ -13,12 +13,12 @@ Lws provides a generic web server app that can be configured with JSON
 config files.  https://libwebsockets.org itself uses this method.
 
 With lwsws handling the serving part, you only need to write an lws protocol
-plugin.  See [plugin-standalone](plugin-standalone) for an example of how
+plugin.  See [plugin-standalone](../plugin-standalone) for an example of how
 to do that outside lws itself, using lws public apis.
 
  $ cmake .. -DLWS_WITH_LWSWS=1
 
-See [README.lwsws.md](READMEs/README.lwsws.md) for information on how to configure
+See [README.lwsws.md](../READMEs/README.lwsws.md) for information on how to configure
 lwsws.
 
 NOTE this method implies libuv is used by lws, to provide crossplatform
@@ -28,11 +28,13 @@ implementations of timers, dynamic lib loading etc for plugins and lwsws.
 
 This method lets you configure web serving in code, instead of using lwsws.
 
-Plugins are still used, which implies libuv needed.
+Plugins are still used, but you have a choice whether to dynamically load
+them or statically include them.  In this example, they are dynamically
+loaded.
 
  $ cmake .. -DLWS_WITH_PLUGINS=1
 
-See [test-server-v2.0.c](test-apps/test-server-v2.0.c)
+See [test-server-v2.0.c](../test-apps/test-server-v2.0.c)
 
 3) protocols in the server app
 
@@ -43,13 +45,23 @@ combined code is all squidged together and is much less maintainable.
 This method is still supported in lws but all ongoing and future work is
 being done in protocol plugins only.
 
+You can simply include the plugin contents and have it buit statically into
+your server, just define this before including the plugin source
+
+```
+#define LWS_PLUGIN_STATIC
+```
+
+This gets you most of the advantages without needing dynamic loading +
+libuv.
+
 
 Notes about lws test apps
 =========================
 
 @section tsb Testing server with a browser
 
-If you run [libwebsockets-test-server](test-apps/test-server.c) and point your browser
+If you run [libwebsockets-test-server](../test-apps/test-server.c) and point your browser
 (eg, Chrome) to
 
 	http://127.0.0.1:7681
@@ -74,7 +86,7 @@ terminates.
 
 To stop the daemon, do
 ```
-	$ kill cat /tmp/.lwsts-lock 
+       $ kill \`cat /tmp/.lwsts-lock\`
 ```
 If it finds a stale lock (the pid mentioned in the file does not exist
 any more) it will delete the lock and create a new one during startup.
@@ -82,6 +94,60 @@ any more) it will delete the lock and create a new one during startup.
 If the lock is valid, the daemon will exit with a note on stderr that
 it was already running.
 
+@section clicert Testing Client Certs
+
+Here is a very quick way to create a CA, and a client and server cert from it,
+for testing.
+
+```
+$ cp -rp ./scripts/client-ca /tmp
+$ cd /tmp/client-ca
+$ ./create-ca.sh
+$ ./create-server-cert.sh server
+$ ./create-client-cert.sh client
+```
+
+The last step wants an export password, you will need this password again to
+import the p12 format certificate into your browser.
+
+This will get you the following
+
+|name|function|
+|----|--------|
+|ca.pem|Your Certificate Authority cert|
+|ca.key|Private key for the CA cert|
+|client.pem|Client certificate, signed by your CA|
+|client.key|Client private key|
+|client.p12|combined client.pem + client.key in p12 format for browsers|
+|server.pem|Server cert, signed by your CA|
+|server.key|Server private key|
+
+You can confirm yourself the client and server certs are signed by the CA.
+
+```
+ $ openssl verify -verbose -trusted ca.pem server.pem
+ $ openssl verify -verbose -trusted ca.pem client.pem
+```
+
+Import the client.p12 file into your browser.  In FFOX57 it's
+
+ - preferences
+ - Privacy & Security
+ - Certificates | View Certificates
+ - Certificate Manager | Your Certificates | Import...
+ - Enter the password you gave when creating client1.p12
+ - Click OK.
+
+You can then run the test server like this:
+
+```
+ $ libwebsockets-test-server -s -A ca.pem -K server.key -C server.pem -v
+```
+
+When you connect your browser to https://localhost:7681 after accepting the
+selfsigned server cert, your browser will pop up a prompt to send the server
+your client cert (the -v switch enables this).  The server will only accept
+a client cert that has been signed by ca.pem.
 
 @section sssl Using SSL on the server side
 
@@ -100,7 +166,7 @@ certificates in the browser and the connection will proceed
 in first https and then websocket wss, acting exactly the
 same.
 
-[test-server.c](test-apps/test-server.c) is all that is needed to use libwebsockets for
+[test-server.c](../test-apps/test-server.c) is all that is needed to use libwebsockets for
 serving both the script html over http and websockets.
 
 @section lwstsdynvhost Dynamic Vhosts

@@ -51,7 +51,7 @@ lws_extension_pmdeflate_restrict_args(struct lws *wsi,
 
 	n = wsi->context->pt_serv_buf_size;
 	if (wsi->protocol->rx_buffer_size)
-		n =  wsi->protocol->rx_buffer_size;
+		n = (int)wsi->protocol->rx_buffer_size;
 
 	extra = 7;
 	while (n >= 1 << (extra + 1))
@@ -82,11 +82,11 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 		oa = in;
 		if (!oa->option_name)
 			break;
-		for (n = 0; n < ARRAY_SIZE(lws_ext_pm_deflate_options); n++)
+		for (n = 0; n < (int)ARRAY_SIZE(lws_ext_pm_deflate_options); n++)
 			if (!strcmp(lws_ext_pm_deflate_options[n].name, oa->option_name))
 				break;
 
-		if (n == ARRAY_SIZE(lws_ext_pm_deflate_options))
+		if (n == (int)ARRAY_SIZE(lws_ext_pm_deflate_options))
 			break;
 		oa->option_index = n;
 
@@ -120,7 +120,7 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 
 		n = context->pt_serv_buf_size;
 		if (wsi->protocol->rx_buffer_size)
-			n =  wsi->protocol->rx_buffer_size;
+			n = (int)wsi->protocol->rx_buffer_size;
 
 		if (n < 128) {
 			lwsl_info(" permessage-deflate requires the protocol (%s) to have an RX buffer >= 128\n",
@@ -174,7 +174,7 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 	case LWS_EXT_CB_PAYLOAD_RX:
 		lwsl_ext(" %s: LWS_EXT_CB_PAYLOAD_RX: in %d, existing in %d\n",
 			 __func__, eff_buf->token_len, priv->rx.avail_in);
-		if (!(wsi->u.ws.rsv_first_msg & 0x40))
+		if (!(wsi->ws->rsv_first_msg & 0x40))
 			return 0;
 
 #if 0
@@ -229,8 +229,8 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 		 * ...then put back the 00 00 FF FF the sender stripped as our
 		 * input to zlib
 		 */
-		if (!priv->rx.avail_in && wsi->u.ws.final &&
-		    !wsi->u.ws.rx_packet_length) {
+		if (!priv->rx.avail_in && wsi->ws->final &&
+		    !wsi->ws->rx_packet_length) {
 			lwsl_ext("RX APPEND_TRAILER-DO\n");
 			was_fin = 1;
 			priv->rx.next_in = trail;
@@ -239,7 +239,7 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 
 		n = inflate(&priv->rx, Z_NO_FLUSH);
 		lwsl_ext("inflate ret %d, avi %d, avo %d, wsifinal %d\n", n,
-			 priv->rx.avail_in, priv->rx.avail_out, wsi->u.ws.final);
+			 priv->rx.avail_in, priv->rx.avail_out, wsi->ws->final);
 		switch (n) {
 		case Z_NEED_DICT:
 		case Z_STREAM_ERROR:
@@ -257,8 +257,8 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 		 * being a FIN fragment, then do the FIN message processing
 		 * of faking up the 00 00 FF FF that the sender stripped.
 		 */
-		if (!priv->rx.avail_in && wsi->u.ws.final &&
-		    !wsi->u.ws.rx_packet_length && !was_fin &&
+		if (!priv->rx.avail_in && wsi->ws->final &&
+		    !wsi->ws->rx_packet_length && !was_fin &&
 		    priv->rx.avail_out /* ambiguous as to if it is the end */
 		) {
 			lwsl_ext("RX APPEND_TRAILER-DO\n");
@@ -302,7 +302,7 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 			priv->rx_held_valid = 1;
 		}
 
-		eff_buf->token_len = (char *)priv->rx.next_out - eff_buf->token;
+		eff_buf->token_len = lws_ptr_diff(priv->rx.next_out, eff_buf->token);
 		priv->count_rx_between_fin += eff_buf->token_len;
 
 		lwsl_ext("  %s: RX leaving with new effbuff len %d, "
@@ -377,7 +377,7 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 
 		if (priv->tx_held_valid) {
 			priv->tx_held_valid = 0;
-			if (priv->tx.avail_out == 1 << priv->args[PMD_TX_BUF_PWR2])
+			if ((int)priv->tx.avail_out == 1 << priv->args[PMD_TX_BUF_PWR2])
 				/*
 				 * we can get a situation he took something in
 				 * but did not generate anything out, at the end
@@ -398,8 +398,8 @@ lws_extension_callback_pm_deflate(struct lws_context *context,
 			}
 		}
 		priv->compressed_out = 1;
-		eff_buf->token_len = (int)(priv->tx.next_out -
-					   (unsigned char *)eff_buf->token);
+		eff_buf->token_len = lws_ptr_diff(priv->tx.next_out,
+						  eff_buf->token);
 
 		/*
 		 * we must announce in our returncode now if there is more

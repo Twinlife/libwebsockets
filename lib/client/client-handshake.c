@@ -50,7 +50,7 @@ lws_client_connect_2(struct lws *wsi)
 
 	lwsl_client("%s\n", __func__);
 
-	if (!wsi->u.hdr.ah) {
+	if (!wsi->ah) {
 		cce = "ah was NULL at cc2";
 		lwsl_err("%s\n", cce);
 		goto oom4;
@@ -344,7 +344,7 @@ lws_client_connect_2(struct lws *wsi)
 			goto failed;
 		wsi->c_port = wsi->vhost->http_proxy_port;
 
-		n = send(wsi->desc.sockfd, (char *)pt->serv_buf, plen,
+		n = send(wsi->desc.sockfd, (char *)pt->serv_buf, (int)plen,
 			 MSG_NOSIGNAL);
 		if (n < 0) {
 			lwsl_debug("ERROR writing to proxy socket\n");
@@ -519,7 +519,7 @@ lws_client_reset(struct lws **pwsi, int ssl, const char *address, int port,
 	wsi->pending_timeout = NO_PENDING_TIMEOUT;
 	wsi->c_port = port;
 	wsi->hdr_parsing_completed = 0;
-	_lws_header_table_reset(wsi->u.hdr.ah);
+	_lws_header_table_reset(wsi->ah);
 
 	if (lws_hdr_simple_create(wsi, _WSI_TOKEN_CLIENT_PEER_ADDRESS, address))
 		return NULL;
@@ -683,6 +683,34 @@ html_parser_cb(const hubbub_token *token, void *pw)
 }
 #endif
 
+static char *
+lws_strdup(const char *s)
+{
+	char *d = lws_malloc(strlen(s) + 1, "strdup");
+
+	if (d)
+		strcpy(d, s);
+
+	return d;
+}
+
+void
+lws_client_stash_destroy(struct lws *wsi)
+{
+	if (!wsi || !wsi->stash)
+		return;
+
+	lws_free_set_NULL(wsi->stash->address);
+	lws_free_set_NULL(wsi->stash->path);
+	lws_free_set_NULL(wsi->stash->host);
+	lws_free_set_NULL(wsi->stash->origin);
+	lws_free_set_NULL(wsi->stash->protocol);
+	lws_free_set_NULL(wsi->stash->method);
+	lws_free_set_NULL(wsi->stash->iface);
+
+	lws_free_set_NULL(wsi->stash);
+}
+
 LWS_VISIBLE struct lws *
 lws_client_connect_via_info(struct lws_client_connect_info *i)
 {
@@ -710,11 +738,22 @@ lws_client_connect_via_info(struct lws_client_connect_info *i)
 	 * not even be able to get ahold of an ah at this point.
 	 */
 
-	/* -1 means just use latest supported */
-	if (i->ietf_version_or_minus_one != -1 && i->ietf_version_or_minus_one)
-		v = i->ietf_version_or_minus_one;
+	if (!i->method) { /* ie, ws */
+		/* allocate the ws struct for the wsi */
+		wsi->ws = lws_zalloc(sizeof(*wsi->ws), "client ws struct");
+		if (!wsi->ws) {
+			lwsl_notice("OOM\n");
+			goto bail;
+		}
 
-	wsi->ietf_spec_revision = v;
+		/* -1 means just use latest supported */
+		if (i->ietf_version_or_minus_one != -1 &&
+		    i->ietf_version_or_minus_one)
+			v = i->ietf_version_or_minus_one;
+
+		wsi->ws->ietf_spec_revision = v;
+	}
+
 	wsi->user_space = NULL;
 	wsi->state = LWSS_CLIENT_UNCONNECTED;
 	wsi->pending_timeout = NO_PENDING_TIMEOUT;
@@ -760,44 +799,39 @@ lws_client_connect_via_info(struct lws_client_connect_info *i)
 	 * things pointed to have gone out of scope.
 	 */
 
-	wsi->u.hdr.stash = lws_malloc(sizeof(*wsi->u.hdr.stash), "client stash");
-	if (!wsi->u.hdr.stash) {
+	wsi->stash = lws_zalloc(sizeof(*wsi->stash), "client stash");
+	if (!wsi->stash) {
 		lwsl_err("%s: OOM\n", __func__);
-		goto bail;
+		goto bail1;
 	}
 
-	wsi->u.hdr.stash->origin[0] = '\0';
-	wsi->u.hdr.stash->protocol[0] = '\0';
-	wsi->u.hdr.stash->method[0] = '\0';
-	wsi->u.hdr.stash->iface[0] = '\0';
+	wsi->stash->address = lws_strdup(i->address);
+	wsi->stash->path = lws_strdup(i->path);
+	wsi->stash->host = lws_strdup(i->host);
 
-	strncpy(wsi->u.hdr.stash->address, i->address,
-		sizeof(wsi->u.hdr.stash->address) - 1);
-	strncpy(wsi->u.hdr.stash->path, i->path,
-		sizeof(wsi->u.hdr.stash->path) - 1);
-	strncpy(wsi->u.hdr.stash->host, i->host,
-		sizeof(wsi->u.hdr.stash->host) - 1);
-	if (i->origin)
-		strncpy(wsi->u.hdr.stash->origin, i->origin,
-			sizeof(wsi->u.hdr.stash->origin) - 1);
-	if (i->protocol)
-		strncpy(wsi->u.hdr.stash->protocol, i->protocol,
-			sizeof(wsi->u.hdr.stash->protocol) - 1);
-	if (i->method)
-		strncpy(wsi->u.hdr.stash->method, i->method,
-			sizeof(wsi->u.hdr.stash->method) - 1);
-	if (i->iface)
-		strncpy(wsi->u.hdr.stash->iface, i->iface,
-			sizeof(wsi->u.hdr.stash->iface) - 1);
+	if (!wsi->stash->address || !wsi->stash->path || !wsi->stash->host)
+		goto bail1;
 
-	wsi->u.hdr.stash->address[sizeof(wsi->u.hdr.stash->address) - 1] = '\0';
-	wsi->u.hdr.stash->path[sizeof(wsi->u.hdr.stash->path) - 1] = '\0';
-	wsi->u.hdr.stash->host[sizeof(wsi->u.hdr.stash->host) - 1] = '\0';
-	wsi->u.hdr.stash->origin[sizeof(wsi->u.hdr.stash->origin) - 1] = '\0';
-	wsi->u.hdr.stash->protocol[sizeof(wsi->u.hdr.stash->protocol) - 1] = '\0';
-	wsi->u.hdr.stash->method[sizeof(wsi->u.hdr.stash->method) - 1] = '\0';
-	wsi->u.hdr.stash->iface[sizeof(wsi->u.hdr.stash->iface) - 1] = '\0';
-
+	if (i->origin) {
+		wsi->stash->origin = lws_strdup(i->origin);
+		if (!wsi->stash->origin)
+			goto bail1;
+	}
+	if (i->protocol) {
+		wsi->stash->protocol = lws_strdup(i->protocol);
+		if (!wsi->stash->protocol)
+			goto bail1;
+	}
+	if (i->method) {
+		wsi->stash->method = lws_strdup(i->method);
+		if (!wsi->stash->method)
+			goto bail1;
+	}
+	if (i->iface) {
+		wsi->stash->iface = lws_strdup(i->iface);
+		if (!wsi->stash->iface)
+			goto bail1;
+	}
 	if (i->pwsi)
 		*i->pwsi = wsi;
 
@@ -810,7 +844,7 @@ lws_client_connect_via_info(struct lws_client_connect_info *i)
 		 * if we failed here, the connection is already closed
 		 * and freed.
 		 */
-		goto bail1;
+		goto bail2;
 	}
 
 	if (i->parent_wsi) {
@@ -829,10 +863,13 @@ lws_client_connect_via_info(struct lws_client_connect_info *i)
 
 	return wsi;
 
+bail1:
+	lws_client_stash_destroy(wsi);
+
 bail:
 	lws_free(wsi);
 
-bail1:
+bail2:
 	if (i->pwsi)
 		*i->pwsi = NULL;
 
@@ -842,7 +879,7 @@ bail1:
 struct lws *
 lws_client_connect_via_info2(struct lws *wsi)
 {
-	struct client_info_stash *stash = wsi->u.hdr.stash;
+	struct client_info_stash *stash = wsi->stash;
 
 	if (!stash)
 		return wsi;
@@ -863,7 +900,7 @@ lws_client_connect_via_info2(struct lws *wsi)
 	if (lws_hdr_simple_create(wsi, _WSI_TOKEN_CLIENT_HOST, stash->host))
 		goto bail1;
 
-	if (stash->origin[0])
+	if (stash->origin)
 		if (lws_hdr_simple_create(wsi, _WSI_TOKEN_CLIENT_ORIGIN,
 					  stash->origin))
 			goto bail1;
@@ -871,22 +908,22 @@ lws_client_connect_via_info2(struct lws *wsi)
 	 * this is a list of protocols we tell the server we're okay with
 	 * stash it for later when we compare server response with it
 	 */
-	if (stash->protocol[0])
+	if (stash->protocol)
 		if (lws_hdr_simple_create(wsi, _WSI_TOKEN_CLIENT_SENT_PROTOCOLS,
 					  stash->protocol))
 			goto bail1;
-	if (stash->method[0])
+	if (stash->method)
 		if (lws_hdr_simple_create(wsi, _WSI_TOKEN_CLIENT_METHOD,
 					  stash->method))
 			goto bail1;
-	if (stash->iface[0])
+	if (stash->iface)
 		if (lws_hdr_simple_create(wsi, _WSI_TOKEN_CLIENT_IFACE,
 					  stash->iface))
 			goto bail1;
 
 #if defined(LWS_WITH_SOCKS5)
 	if (!wsi->vhost->socks_proxy_port)
-		lws_free_set_NULL(wsi->u.hdr.stash);
+		lws_client_stash_destroy(wsi);
 #endif
 
 	/*
@@ -917,7 +954,7 @@ lws_client_connect_via_info2(struct lws *wsi)
 bail1:
 #if defined(LWS_WITH_SOCKS5)
 	if (!wsi->vhost->socks_proxy_port)
-		lws_free_set_NULL(wsi->u.hdr.stash);
+		lws_free_set_NULL(wsi->stash);
 #endif
 
 	return NULL;
@@ -1029,9 +1066,9 @@ void socks_generate_msg(struct lws *wsi, enum socks_msg_type type,
 		n = len++;
 
 		/* the address we tell SOCKS proxy to connect to */
-		strncpy((char *)&(pt->serv_buf[len]), wsi->u.hdr.stash->address,
+		strncpy((char *)&(pt->serv_buf[len]), wsi->stash->address,
 			context->pt_serv_buf_size - len);
-		len += strlen(wsi->u.hdr.stash->address);
+		len += strlen(wsi->stash->address);
 		net_num = htons(wsi->c_port);
 
 		/* the port we tell SOCKS proxy to connect to */
@@ -1039,7 +1076,7 @@ void socks_generate_msg(struct lws *wsi, enum socks_msg_type type,
 		pt->serv_buf[len++] = p[1];
 
 		/* the length of the address, excluding port */
-		pt->serv_buf[n] = strlen(wsi->u.hdr.stash->address);
+		pt->serv_buf[n] = strlen(wsi->stash->address);
 		break;
 		
 	default:

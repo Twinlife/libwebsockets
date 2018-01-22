@@ -20,6 +20,7 @@
  */
 
 #include "private-lwsgs.h"
+#include <stdlib.h>
 
 /* keep changes in sync with the enum in lwsgs.h */
 static const char * const param_names[] = {
@@ -419,6 +420,14 @@ callback_generic_sessions(struct lws *wsi, enum lws_callback_reasons reason,
 		}
 		break;
 
+	case LWS_CALLBACK_HTTP_WRITEABLE:
+                if (!pss->check_response)
+                        break;
+		n = lws_write(wsi, (unsigned char *)&pss->check_response_value, 1, LWS_WRITE_HTTP_FINAL);
+		if (n != 1)
+			return -1;
+		goto try_to_reuse;
+
 	case LWS_CALLBACK_HTTP:
 		lwsl_info("LWS_CALLBACK_HTTP: %s\n", (const char *)in);
 
@@ -438,7 +447,8 @@ callback_generic_sessions(struct lws *wsi, enum lws_callback_reasons reason,
 		}
 		if (!strcmp((const char *)in, "/lwsgs-check")) {
 			lwsgs_handler_check(vhd, wsi, pss);
-			goto try_to_reuse;
+			/* second, async part will complete transaction */
+			break;
 		}
 
 		if (!strcmp((const char *)in, "/lwsgs-login"))
@@ -454,7 +464,8 @@ callback_generic_sessions(struct lws *wsi, enum lws_callback_reasons reason,
 
 		lwsl_err("http doing 404 on %s\n", (const char *)in);
 		lws_return_http_status(wsi, HTTP_STATUS_NOT_FOUND, NULL);
-		goto try_to_reuse;
+		return -1;
+		//goto try_to_reuse;
 
 	case LWS_CALLBACK_CHECK_ACCESS_RIGHTS:
 		n = 0;
@@ -748,7 +759,8 @@ completion_flow:
 		lwsgw_expire_old_sessions(vhd);
 
 		args = (struct lws_process_html_args *)in;
-
+		if (!pss)
+			return 1;
 		if (pss->delete_session.id[0]) {
 			pc = cookie;
 			lwsgw_cookie_from_session(&pss->delete_session, 0, &pc,

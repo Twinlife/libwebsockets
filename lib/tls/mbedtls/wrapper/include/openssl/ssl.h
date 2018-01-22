@@ -35,6 +35,22 @@
 #define X509_CHECK_FLAG_MULTI_LABEL_WILDCARDS		(1 << 3)
 #define X509_CHECK_FLAG_SINGLE_LABEL_SUBDOMAINS		(1 << 4)
 
+ mbedtls_x509_crt *
+ ssl_ctx_get_mbedtls_x509_crt(SSL_CTX *ssl_ctx);
+
+ mbedtls_x509_crt *
+ ssl_get_peer_mbedtls_x509_crt(SSL *ssl);
+
+ int SSL_set_sni_callback(SSL *ssl, int(*cb)(void *, mbedtls_ssl_context *,
+ 				const unsigned char *, size_t), void *param);
+
+ void SSL_set_SSL_CTX(SSL *ssl, SSL_CTX *ctx);
+
+ int SSL_CTX_add_client_CA_ASN1(SSL_CTX *ssl, int len,
+                 const unsigned char *d);
+
+ SSL *SSL_SSL_from_mbedtls_ssl_context(mbedtls_ssl_context *msc);
+
 /**
  * @brief create a SSL context
  *

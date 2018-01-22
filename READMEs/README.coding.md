@@ -44,7 +44,7 @@ clients).
 If you want to send something, do NOT just send it but request a callback
 when the socket is writeable using
 
- - `lws_callback_on_writable(context, wsi)` for a specific `wsi`, or
+ - `lws_callback_on_writable(wsi)` for a specific `wsi`, or
  
  - `lws_callback_on_writable_all_protocol(protocol)` for all connections
 using that protocol to get a callback when next writeable.
@@ -67,6 +67,25 @@ or our connection to him, cannot handle anything new, we should not generate
 anything new for him.  This is how unix shell piping works, you may have
 `cat a.txt | grep xyz > remote", but actually that does not cat anything from
 a.txt while remote cannot accept anything new. 
+
+@section oneper Only one lws_write per WRITEABLE callback
+
+From v2.5, lws strictly enforces only one lws_write() per WRITEABLE callback.
+
+You will receive a message about "Illegal back-to-back write of ... detected"
+if there is a second lws_write() before returning to the event loop.
+
+This is because with http/2, the state of the network connection carrying a
+wsi is unrelated to any state of the wsi.  The situation on http/1 where a
+new request implied a new tcp connection and new SSL buffer, so you could
+assume some window for writes is no longer true.  Any lws_write() can fail
+and be buffered for completion by lws; it will be auto-completed by the
+event loop.
+
+Note that if you are handling your own http responses, writing the headers
+needs to be done with a separate lws_write() from writing any payload.  That
+means after writing the headers you must call `lws_callback_on_writable(wsi)`
+and send any payload from the writable callback.
 
 @section otherwr Do not rely on only your own WRITEABLE requests appearing
 
@@ -122,44 +141,93 @@ all the server resources.
 
 @section evtloop Libwebsockets is singlethreaded
 
-Libwebsockets works in a serialized event loop, in a single thread.
+Libwebsockets works in a serialized event loop, in a single thread.  It supports
+not only the default poll() backend, but libuv, libev, and libevent event loop
+libraries that also take this locking-free, nonblocking event loop approach that
+is not threadsafe.  There are several advantages to this technique, but one
+disadvantage, it doesn't integrate easily if there are multiple threads that
+want to use libwebsockets.
 
-Directly performing websocket actions from other threads is not allowed.
-Aside from the internal data being inconsistent in `forked()` processes,
-the scope of a `wsi` (`struct websocket`) can end at any time during service
-with the socket closing and the `wsi` freed.
+However integration to multithreaded apps is possible if you follow some guidelines.
 
-Websocket write activities should only take place in the
-`LWS_CALLBACK_SERVER_WRITEABLE` callback as described below.
+1) Aside from two APIs, directly calling lws apis from other threads is not allowed.
 
-[This network-programming necessity to link the issue of new data to
-the peer taking the previous data is not obvious to all users so let's
-repeat that in other words:
+2) If you want to keep a list of live wsi, you need to use lifecycle callbacks on
+the protocol in the service thread to manage the list, with your own locking.
+Typically you use an ESTABLISHED callback to add ws wsi to your list and a CLOSED
+callback to remove them.
 
-***ONLY DO LWS_WRITE FROM THE WRITEABLE CALLBACK***
+3) LWS regulates your write activity by being able to let you know when you may
+write more on a connection.  That reflects the reality that you cannot succeed to
+send data to a peer that has no room for it, so you should not generate or buffer
+write data until you know the peer connection can take more.
 
-There is another network-programming truism that surprises some people which
-is if the sink for the data cannot accept more:
+Other libraries pretend that the guy doing the writing is the boss who decides
+what happens, and absorb as much as you want to write to local buffering.  That does
+not scale to a lot of connections, because it will exhaust your memory and waste
+time copying data around in memory needlessly.
 
-***YOU MUST PERFORM RX FLOW CONTROL*** to stop taking new input.  TCP will make
-this situation known to the upstream sender by making it impossible for him to
-send anything more on the connection until we start accepting things again.
+The truth is the receiver, along with the network between you, is the boss who
+decides what will happen.  If he stops accepting data, no data will move.  LWS is
+designed to reflect that.
+
+If you have something to send, you call `lws_callback_on_writable()` on the
+connection, and when it is writeable, you will get a `LWS_CALLBACK_SERVER_WRITEABLE`
+callback, where you should generate the data to send and send it with `lws_write()`.
+
+You cannot send data using `lws_write()` outside of the WRITEABLE callback.
+
+4) For multithreaded apps, this corresponds to a need to be able to provoke the
+`lws_callback_on_writable()` action and to wake the service thread from its event
+loop wait (sleeping in `poll()` or `epoll()` or whatever).  The rules above
+mean directly sending data on the connection from another thread is out of the
+question.
+
+Therefore the two apis mentioned above that may be used from another thread are
+
+ - For LWS using the default poll() event loop, `lws_callback_on_writable()`
+
+ - For LWS using libuv/libev/libevent event loop, `lws_cancel_service()`
+
+If you are using the default poll() event loop, one "foreign thread" at a time may
+call `lws_callback_on_writable()` directly for a wsi.  You need to use your own
+locking around that to serialize multiple thread access to it.
+
+If you implement LWS_CALLBACK_GET_THREAD_ID in protocols[0], then LWS will detect
+when it has been called from a foreign thread and automatically use
+`lws_cancel_service()` to additionally wake the service loop from its wait.
+
+For libuv/libev/libevent event loop, they cannot handle being called from other
+threads.  So there is a slightly different scheme, you may call `lws_cancel_service()` 
+to force the event loop to end immediately.  This then broadcasts a callback (in the
+service thread context) `LWS_CALLBACK_EVENT_WAIT_CANCELLED`, to all protocols on all
+vhosts, where you can perform your own locking and walk a list of wsi that need
+`lws_callback_on_writable()` calling on them.
+
+`lws_cancel_service()` is very cheap to call.
+
+5) The obverse of this truism about the receiver being the boss is the case where
+we are receiving.  If we get into a situation we actually can't usefully
+receive any more, perhaps because we are passing the data on and the guy we want
+to send to can't receive any more, then we should "turn off RX" by using the
+RX flow control API, `lws_rx_flow_control(wsi, 0)`.  When something happens where we
+can accept more RX, (eg, we learn our onward connection is writeable) we can call
+it again to re-enable it on the incoming wsi.
+
+LWS stops calling back about RX immediately you use flow control to disable RX, it
+buffers the data internally if necessary.  So you will only see RX when you can
+handle it.  When flow control is disabled, LWS stops taking new data in... this makes
+the situation known to the sender by TCP "backpressure", the tx window fills and the
+sender finds he cannot write any more to the connection.
 
 See the mirror protocol implementations for example code.
-
-Only live connections appear in the user callbacks, so this removes any
-possibility of trying to used closed and freed wsis.
 
 If you need to service other socket or file descriptors as well as the
 websocket ones, you can combine them together with the websocket ones
 in one poll loop, see "External Polling Loop support" below, and
-still do it all in one thread / process context.
-
-If you insist on trying to use it from multiple threads, take special care if
-you might simultaneously create more than one context from different threads.
-
-SSL_library_init() is called from the context create api and it also is not
-reentrant.  So at least create the contexts sequentially.
+still do it all in one thread / process context.  If the need is less
+architectural, you can also create RAW mode client and serving sockets; this
+is how the lws plugin for the ssh server works.
 
 @section anonprot Working without a protocol name
 
@@ -541,7 +609,7 @@ other reasons, if any of that happens you'll get a
 After attempting the connection and getting back a non-`NULL` `wsi` you should
 loop calling `lws_service()` until one of the above callbacks occurs.
 
-As usual, see [test-client.c](test-apps/test-client.c) for example code.
+As usual, see [test-client.c](../test-apps/test-client.c) for example code.
 
 Notice that the client connection api tries to progress the connection
 somewhat before returning.  That means it's possible to get callbacks like

@@ -85,7 +85,7 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 				continue;
 			}
 			ext_name[n] = *c++;
-			if (n < sizeof(ext_name) - 1)
+			if (n < (int)sizeof(ext_name) - 1)
 				n++;
 			continue;
 		}
@@ -184,25 +184,28 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 					args++;
 				po = opts;
 				while (po->name) {
-					lwsl_debug("'%s' '%s'\n", po->name, args);
 					/* only support arg-less options... */
-					if (po->type == EXTARG_NONE &&
-					    !strncmp(args, po->name,
-							    strlen(po->name))) {
-						oa.option_name = NULL;
-						oa.option_index = po - opts;
-						oa.start = NULL;
-						lwsl_debug("setting %s\n", po->name);
-						if (!ext->callback(
-								lws_get_context(wsi), ext, wsi,
-								  LWS_EXT_CB_OPTION_SET,
-								  wsi->act_ext_user[
-								         wsi->count_act_ext],
-								  &oa, (end - *p))) {
+					if (po->type != EXTARG_NONE ||
+					    strncmp(args, po->name,
+						    strlen(po->name))) {
+						po++;
+						continue;
+					}
+					oa.option_name = NULL;
+					oa.option_index = (int)(po - opts);
+					oa.start = NULL;
+					lwsl_debug("setting %s\n", po->name);
+					if (!ext->callback(
+						lws_get_context(wsi), ext, wsi,
+							  LWS_EXT_CB_OPTION_SET,
+							  wsi->act_ext_user[
+								 wsi->count_act_ext],
+							  &oa, (end - *p))) {
 
-							*p += lws_snprintf(*p, (end - *p), "; %s", po->name);
-							lwsl_debug("adding option %s\n", po->name);
-						}
+						*p += lws_snprintf(*p, (end - *p),
+							"; %s", po->name);
+						lwsl_debug("adding option %s\n",
+								po->name);
 					}
 					po++;
 				}
@@ -211,8 +214,7 @@ lws_extension_server_handshake(struct lws *wsi, char **p, int budget)
 			}
 
 			wsi->count_act_ext++;
-			lwsl_parser("count_act_ext <- %d\n",
-				    wsi->count_act_ext);
+			lwsl_parser("cnt_act_ext <- %d\n", wsi->count_act_ext);
 
 			ext++;
 		}
@@ -303,7 +305,8 @@ handshake_0405(struct lws_context *context, struct lws *wsi)
 	LWS_CPYAPP(p, "\x0d\x0a");
 
 	args.p = p;
-	args.max_len = ((char *)pt->serv_buf + context->pt_serv_buf_size) - p;
+	args.max_len = lws_ptr_diff((char *)pt->serv_buf +
+				    context->pt_serv_buf_size, p);
 	if (user_callback_handle_rxflow(wsi->protocol->callback, wsi,
 					LWS_CALLBACK_ADD_HEADERS,
 					wsi->user_space, &args, 0))
@@ -320,8 +323,9 @@ handshake_0405(struct lws_context *context, struct lws *wsi)
 
 		/* okay send the handshake response accepting the connection */
 
-		lwsl_parser("issuing resp pkt %d len\n", (int)(p - response));
-#if defined(DEBUG) && ! defined(LWS_WITH_ESP8266)
+		lwsl_parser("issuing resp pkt %d len\n",
+			    lws_ptr_diff(p, response));
+#if defined(DEBUG)
 		fwrite(response, 1,  p - response, stderr);
 #endif
 		n = lws_write(wsi, (unsigned char *)response,

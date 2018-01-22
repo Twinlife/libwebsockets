@@ -127,24 +127,25 @@ int lws_h2_configure_if_upgraded(struct lws *wsi)
 
 	/* adopt the header info */
 
-	ah = wsi->u.hdr.ah;
+	ah = wsi->ah;
 
 	lws_union_transition(wsi, LWSCM_HTTP2_SERVING);
 	wsi->state = LWSS_HTTP2_AWAIT_CLIENT_PREFACE;
 
 	/* http2 union member has http union struct at start */
-	wsi->u.http.ah = ah;
+	wsi->ah = ah;
 
-	wsi->u.h2.h2n = lws_zalloc(sizeof(*wsi->u.h2.h2n), "h2n");
-	if (!wsi->u.h2.h2n)
+	wsi->h2.h2n = lws_zalloc(sizeof(*wsi->h2.h2n), "h2n");
+	if (!wsi->h2.h2n)
 		return 1;
 
 	lws_h2_init(wsi);
 
 	/* HTTP2 union */
 
-	lws_hpack_dynamic_size(wsi, wsi->u.h2.h2n->set.s[H2SET_HEADER_TABLE_SIZE]);
-	wsi->u.h2.tx_cr = 65535;
+	lws_hpack_dynamic_size(wsi,
+			       wsi->h2.h2n->set.s[H2SET_HEADER_TABLE_SIZE]);
+	wsi->h2.tx_cr = 65535;
 
 	lwsl_info("%s: wsi %p: configured for h2\n", __func__, wsi);
 #endif

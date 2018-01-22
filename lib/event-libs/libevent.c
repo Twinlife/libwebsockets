@@ -98,6 +98,9 @@ int tsi)
 		context->pt[tsi].io_loop_event_base = loop;
 	}
 
+	if (lws_create_event_pipes(context))
+		return 1;
+
 	/*
 	* Initialize all events with the listening sockets
 	* and register a callback for read operations
@@ -180,6 +183,19 @@ lws_libevent_accept(struct lws *new_wsi, lws_sock_file_fd_type desc)
 		(EV_READ | EV_PERSIST), lws_event_cb, &new_wsi->w_read);
 	new_wsi->w_write.event_watcher = event_new(pt->io_loop_event_base, fd,
 		(EV_WRITE | EV_PERSIST), lws_event_cb, &new_wsi->w_write);
+}
+
+LWS_VISIBLE void
+lws_libevent_destroy(struct lws *wsi)
+{
+	if (!wsi)
+		return;
+
+	if(wsi->w_read.event_watcher)
+		event_free(wsi->w_read.event_watcher);
+
+	if(wsi->w_write.event_watcher)
+		event_free(wsi->w_write.event_watcher);
 }
 
 LWS_VISIBLE void

@@ -31,7 +31,7 @@
 /* queue free space below this, rx flow is disabled */
 #define RXFLOW_MIN (4)
 /* queue free space above this, rx flow is enabled */
-#define RXFLOW_MAX (QUEUELEN / 3)
+#define RXFLOW_MAX ((2 * QUEUELEN) / 3)
 
 #define MAX_MIRROR_INSTANCES 3
 
@@ -108,7 +108,8 @@ mirror_update_worst_tail(struct mirror_instance *mi)
 
 	lws_start_foreach_ll(struct per_session_data__lws_mirror *,
 			     pss, mi->same_mi_pss_list) {
-		wai = lws_ring_get_count_waiting_elements(mi->ring, &pss->tail);
+		wai = (uint32_t)lws_ring_get_count_waiting_elements(mi->ring,
+								&pss->tail);
 		if (wai >= worst) {
 			worst = wai;
 			worst_tail = pss->tail;
@@ -122,13 +123,12 @@ mirror_update_worst_tail(struct mirror_instance *mi)
 	lws_ring_update_oldest_tail(mi->ring, worst_tail);
 	if (oldest == lws_ring_get_oldest_tail(mi->ring))
 		return 0;
-
 	/*
 	 * The oldest tail did move on.  Check if we should re-enable rx flow
 	 * for the mirror instance since we made some space now.
 	 */
 	if (!mi->rx_enabled && /* rx is disabled */
-	    lws_ring_get_count_free_elements(mi->ring) > RXFLOW_MAX)
+	    lws_ring_get_count_free_elements(mi->ring) >= RXFLOW_MAX)
 		/* there is enough space, let's re-enable rx for our instance */
 		mirror_rxflow_instance(mi, 1);
 
@@ -371,7 +371,7 @@ callback_lws_mirror(struct lws *wsi, enum lws_callback_reasons reason,
 		break;
 
 	case LWS_CALLBACK_RECEIVE:
-		n = lws_ring_get_count_free_elements(pss->mi->ring);
+		n = (int)lws_ring_get_count_free_elements(pss->mi->ring);
 		if (!n) {
 			lwsl_notice("dropping!\n");
 			if (pss->mi->rx_enabled)
@@ -403,6 +403,10 @@ req_writable:
 		mirror_callback_all_in_mi_on_writable(pss->mi);
 		break;
 
+	case LWS_CALLBACK_EVENT_WAIT_CANCELLED:
+		lwsl_notice("LWS_CALLBACK_EVENT_WAIT_CANCELLED\n");
+		break;
+
 	default:
 		break;
 	}
@@ -414,7 +418,7 @@ req_writable:
 		"lws-mirror-protocol", \
 		callback_lws_mirror, \
 		sizeof(struct per_session_data__lws_mirror), \
-		128, /* rx buf size must be >= permessage-deflate rx size */ \
+		4096, /* rx buf size must be >= permessage-deflate rx size */ \
 		0, NULL, 0 \
 	}
 

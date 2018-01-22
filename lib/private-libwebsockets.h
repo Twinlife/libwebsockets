@@ -49,54 +49,8 @@ typedef struct { long double x, y; } _Float128;
 #define SOMAXCONN 3
 #endif
 
-#if defined(LWS_WITH_ESP8266)
-#include <user_interface.h>
-#define assert(n)
-
-/* rom-provided stdc functions for free, ensure use these instead of libc ones */
-
-int ets_vsprintf(char *str, const char *format, va_list argptr);
-int ets_vsnprintf(char *buffer, size_t sizeOfBuffer,  const char *format, va_list argptr);
-int ets_snprintf(char *str, size_t size, const char *format, ...);
-int ets_sprintf(char *str, const char *format, ...);
-int os_printf_plus(const char *format, ...);
-#undef malloc
-#undef realloc
-#undef free
-void *pvPortMalloc(size_t s, const char *f, int line);
-#define malloc(s) pvPortMalloc(s, "", 0)
-void *pvPortRealloc(void *p, size_t s, const char *f, int line);
-#define realloc(p, s) pvPortRealloc(p, s, "", 0)
-void vPortFree(void *p, const char *f, int line);
-#define free(p) vPortFree(p, "", 0)
-#undef memcpy
-void *ets_memcpy(void *dest, const void *src, size_t n);
-#define memcpy ets_memcpy
-void *ets_memset(void *dest, int v, size_t n);
-#define memset ets_memset
-char *ets_strcpy(char *dest, const char *src);
-#define strcpy ets_strcpy
-char *ets_strncpy(char *dest, const char *src, size_t n);
-#define strncpy ets_strncpy
-char *ets_strstr(const char *haystack, const char *needle);
-#define strstr ets_strstr
-int ets_strcmp(const char *s1, const char *s2);
-int ets_strncmp(const char *s1, const char *s2, size_t n);
-#define strcmp ets_strcmp
-#define strncmp ets_strncmp
-size_t ets_strlen(const char *s);
-#define strlen ets_strlen
-void *ets_memmove(void *dest, const void *src, size_t n);
-#define memmove ets_memmove
-char *ets_strchr(const char *s, int c);
-#define strchr_ets_strchr
-#undef _DEBUG
-#include <osapi.h>
-
-#else
 #define STORE_IN_ROM
 #include <assert.h>
-#endif
 #if LWS_MAX_SMP > 1
 #include <pthread.h>
 #endif
@@ -180,17 +134,7 @@ int fork(void);
 #endif
 #include <netdb.h>
 #include <signal.h>
-#ifdef LWS_WITH_ESP8266
-#include <sockets.h>
-#define vsnprintf ets_vsnprintf
-#define snprintf ets_snprintf
-#define sprintf ets_sprintf
-
-int kill(int pid, int sig);
-
-#else
 #include <sys/socket.h>
-#endif
 #ifdef LWS_WITH_HTTP_PROXY
 #include <hubbub/hubbub.h>
 #include <hubbub/parser.h>
@@ -198,7 +142,7 @@ int kill(int pid, int sig);
 #if defined(LWS_BUILTIN_GETIFADDRS)
  #include "./misc/getifaddrs.h"
 #else
- #if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32)
+ #if !defined(LWS_WITH_ESP32)
  #if defined(__HAIKU__)
    #define _BSD_SOURCE
  #endif
@@ -208,15 +152,15 @@ int kill(int pid, int sig);
 #if defined (__ANDROID__)
 #include <syslog.h>
 #include <sys/resource.h>
-#elif defined (__sun) || defined(__HAIKU__)
+#elif defined (__sun) || defined(__HAIKU__) || defined(__QNX__)
 #include <syslog.h>
 #else
-#if !defined(LWS_WITH_ESP8266)  && !defined(LWS_WITH_ESP32)
+#if !defined(LWS_WITH_ESP32)
 #include <sys/syslog.h>
 #endif
 #endif
 #include <netdb.h>
-#if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32)
+#if !defined(LWS_WITH_ESP32)
 #include <sys/mman.h>
 #include <sys/un.h>
 #include <netinet/in.h>
@@ -252,16 +196,8 @@ int kill(int pid, int sig);
 
 #define lws_set_blocking_send(wsi)
 
-#if defined(LWS_WITH_ESP8266)
-#define lws_socket_is_valid(x) ((x) != NULL)
-#define LWS_SOCK_INVALID (NULL)
-struct lws;
-const char *
-lws_plat_get_peer_simple(struct lws *wsi, char *name, int namelen);
-#else
 #define lws_socket_is_valid(x) (x >= 0)
 #define LWS_SOCK_INVALID (-1)
-#endif
 #endif
 
 #ifndef LWS_HAVE_BZERO
@@ -288,10 +224,17 @@ lws_plat_get_peer_simple(struct lws *wsi, char *name, int namelen);
 #else
 #if defined(LWS_WITH_ESP32)
 #define OPENSSL_NO_TLSEXT
+#undef MBEDTLS_CONFIG_FILE
+#define MBEDTLS_CONFIG_FILE <mbedtls/esp_config.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/x509_crt.h>
+#include "tls/mbedtls/wrapper/include/openssl/ssl.h" /* wrapper !!!! */
 #else
 #if defined(LWS_WITH_MBEDTLS)
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
+#include <mbedtls/x509_csr.h>
+#include "tls/mbedtls/wrapper/include/openssl/ssl.h" /* wrapper !!!! */
 #else
 #include <openssl/ssl.h>
 #include <openssl/evp.h>
@@ -325,25 +268,6 @@ static inline int compatible_close(int fd) { return close(fd); }
 #if defined(WIN32) || defined(_WIN32)
 #include <gettimeofday.h>
 #endif
-
-#if defined(LWS_WITH_ESP8266)
-#undef compatible_close
-#define compatible_close(fd) { fd->state=ESPCONN_CLOSE; espconn_delete(fd); }
-lws_sockfd_type
-esp8266_create_tcp_stream_socket(void);
-void
-esp8266_tcp_stream_bind(lws_sockfd_type fd, int port, struct lws *wsi);
-#ifndef BIG_ENDIAN
-#define BIG_ENDIAN    4321  /* to show byte order (taken from gcc) */
-#endif
-#ifndef LITTLE_ENDIAN
-#define LITTLE_ENDIAN 1234
-#endif
-#ifndef BYTE_ORDER
-#define BYTE_ORDER LITTLE_ENDIAN
-#endif
-#endif
-
 
 #if defined(WIN32) || defined(_WIN32)
 
@@ -486,6 +410,61 @@ extern "C" {
 #define SYSTEM_RANDOM_FILEPATH "/dev/urandom"
 #endif
 
+/*
+ * Choose the SSL backend
+ */
+
+#if defined(LWS_OPENSSL_SUPPORT)
+#if defined(LWS_WITH_MBEDTLS________)
+struct lws_tls_mbed_ctx {
+
+};
+struct lws_tls_mbed_conn {
+
+};
+struct lws_tls_mbed_bio {
+
+};
+struct lws_tls_mbed_x509 {
+
+};
+typedef struct lws_tls_mbed_conn lws_tls_conn;
+typedef struct lws_tls_mbed_ctx lws_tls_ctx;
+typedef struct lws_tls_mbed_bio lws_tls_bio;
+typedef struct lws_tls_mbed_x509 lws_tls_x509;
+#else
+typedef SSL lws_tls_conn;
+typedef SSL_CTX lws_tls_ctx;
+typedef BIO lws_tls_bio;
+typedef X509 lws_tls_x509;
+#endif
+#endif
+
+/*
+ * All lws_tls...() functions must return this type, converting the
+ * native backend result and doing the extra work to determine which one
+ * as needed.
+ *
+ * Native TLS backend return codes are NOT ALLOWED outside the backend.
+ *
+ * Non-SSL mode also uses these types.
+ */
+enum lws_ssl_capable_status {
+	LWS_SSL_CAPABLE_ERROR = -1,		 /* it failed */
+	LWS_SSL_CAPABLE_DONE = 0,		 /* it succeeded */
+	LWS_SSL_CAPABLE_MORE_SERVICE_READ = -2,	 /* retry WANT_READ */
+	LWS_SSL_CAPABLE_MORE_SERVICE_WRITE = -3,  /* retry WANT_WRITE */
+	LWS_SSL_CAPABLE_MORE_SERVICE = -4,	 /* general retry */
+};
+
+#if defined(__clang__)
+#define lws_memory_barrier() __sync_synchronize()
+#elif defined(__GNUC__)
+#define lws_memory_barrier() __sync_synchronize()
+#else
+#define lws_memory_barrier()
+#endif
+
 enum lws_websocket_opcodes_07 {
 	LWSWSOPC_CONTINUATION = 0,
 	LWSWSOPC_TEXT_FRAME = 1,
@@ -502,26 +481,49 @@ enum lws_websocket_opcodes_07 {
 
 
 enum lws_connection_states {
-	LWSS_HTTP,
-	LWSS_HTTP_ISSUING_FILE,
-	LWSS_HTTP_HEADERS,
-	LWSS_HTTP_BODY,
-	LWSS_DEAD_SOCKET,
-	LWSS_ESTABLISHED,
-	LWSS_CLIENT_HTTP_ESTABLISHED,
-	LWSS_CLIENT_UNCONNECTED,
-	LWSS_WAITING_TO_SEND_CLOSE_NOTIFICATION,
-	LWSS_RETURNED_CLOSE_ALREADY,
-	LWSS_AWAITING_CLOSE_ACK,
-	LWSS_FLUSHING_STORED_SEND_BEFORE_CLOSE,
-	LWSS_SHUTDOWN,
+	/* FLAG: one or another kind of ws link */
+	_LSF_WEBSOCKET					= (1 << 5),
+	/* FLAG: close callback */
+	_LSF_CCB					= (1 << 6),
+	/* FLAG: pollout capable */
+	_LSF_POLLOUT					= (1 << 7),
 
-	LWSS_HTTP2_AWAIT_CLIENT_PREFACE,
-	LWSS_HTTP2_ESTABLISHED_PRE_SETTINGS,
-	LWSS_HTTP2_ESTABLISHED,
+	LWSS_HTTP					= _LSF_CCB | 0,
+	LWSS_HTTP_ISSUING_FILE				=  1,
+	LWSS_HTTP_HEADERS				=  2,
+	LWSS_HTTP_BODY					= _LSF_CCB | 3,
+	LWSS_DEAD_SOCKET				=  4,
+	LWSS_ESTABLISHED				= _LSF_CCB | 5 |
+							  _LSF_WEBSOCKET |
+							  _LSF_POLLOUT,
+	LWSS_CLIENT_HTTP_ESTABLISHED			=  6,
+	LWSS_CLIENT_UNCONNECTED				=  7,
+	LWSS_WAITING_TO_SEND_CLOSE_NOTIFICATION		= _LSF_CCB |  8 |
+							  _LSF_POLLOUT,
+	LWSS_RETURNED_CLOSE_ALREADY			= _LSF_CCB |  9 |
+							  _LSF_POLLOUT,
+	LWSS_AWAITING_CLOSE_ACK				= _LSF_CCB | 10,
+	LWSS_FLUSHING_SEND_BEFORE_CLOSE			= _LSF_CCB | 11 |
+							  _LSF_POLLOUT,
+	LWSS_SHUTDOWN					= 12,
 
-	LWSS_CGI,
+	LWSS_HTTP2_AWAIT_CLIENT_PREFACE			= 13,
+	LWSS_HTTP2_ESTABLISHED_PRE_SETTINGS		= 14 | _LSF_POLLOUT,
+	LWSS_HTTP2_ESTABLISHED				= _LSF_CCB | 15 |
+							  _LSF_POLLOUT,
+	LWSS_HTTP2_ESTABLISHED_WS			= _LSF_CCB | 16 |
+							  _LSF_WEBSOCKET,
+
+	LWSS_CGI					= 17,
+
+	LWSS_HTTP2_DEFERRING_ACTION			= _LSF_CCB | 18 |
+							  _LSF_POLLOUT,
+
+	LWSS_HTTP_DEFERRING_ACTION			= _LSF_CCB | 19 |
+							  _LSF_POLLOUT,
 };
+
+#define lws_state_is_ws(s) (!!(s & _LSF_WEBSOCKET))
 
 enum http_version {
 	HTTP_VERSION_1_0,
@@ -566,13 +568,15 @@ enum lws_rx_parse_state {
 
 enum connection_mode {
 	LWSCM_HTTP_SERVING,
-	LWSCM_HTTP_SERVING_ACCEPTED, /* actual HTTP service going on */
+	/* actual HTTP service going on */
+	LWSCM_HTTP_SERVING_ACCEPTED,
 	LWSCM_PRE_WS_SERVING_ACCEPT,
 
 	LWSCM_WS_SERVING,
 	LWSCM_WS_CLIENT,
 
 	LWSCM_HTTP2_SERVING,
+	LWSCM_HTTP2_WS_SERVING,
 
 	/* transient, ssl delay hiding */
 	LWSCM_SSL_ACK_PENDING,
@@ -586,6 +590,7 @@ enum connection_mode {
 	LWSCM_CGI, /* stdin, stdout, stderr for another cgi master wsi */
 	LWSCM_RAW, /* raw with bulk handling */
 	LWSCM_RAW_FILEDESC, /* raw without bulk handling */
+	LWSCM_EVENT_PIPE, /* event pipe with no vhost or protocol binding */
 
 	/* HTTP Client related */
 	LWSCM_HTTP_CLIENT = LWSCM_FLAG_IMPLIES_CALLBACK_CLOSED_CLIENT_HTTP,
@@ -604,8 +609,6 @@ enum connection_mode {
 	LWSCM_WSCL_WAITING_SOCKS_AUTH_REPLY,
 
 	/****** add new things just above ---^ ******/
-
-
 };
 
 /* enums of socks version */
@@ -676,8 +679,8 @@ enum {
 struct lws_ring {
 	void *buf;
 	void (*destroy_element)(void *element);
-	size_t buflen;
-	size_t element_len;
+	uint32_t buflen;
+	uint32_t element_len;
 	uint32_t head;
 	uint32_t oldest_tail;
 };
@@ -727,6 +730,13 @@ struct lws_fd_hashtable {
 };
 #endif
 
+struct lws_foreign_thread_pollfd {
+	struct lws_foreign_thread_pollfd *next;
+	int fd_index;
+	int _and;
+	int _or;
+};
+
 /*
  * This is totally opaque to code using the library.  It's exported as a
  * forward-reference pointer-only declaration; the user can use the pointer with
@@ -773,19 +783,27 @@ struct allocated_headers {
 #else
 	uint8_t rx[2048];
 #endif
-
-	int16_t rxpos;
-	int16_t rxlen;
-	uint32_t pos;
-	uint32_t http_response;
-	int hdr_token_idx;
-
 #ifndef LWS_NO_CLIENT
 	char initial_handshake_hash_base64[30];
 #endif
 
+	uint32_t pos;
+	uint32_t http_response;
+	uint32_t current_token_limit;
+	int hdr_token_idx;
+
+	int16_t rxpos;
+	int16_t rxlen;
+	int16_t lextable_pos;
+
 	uint8_t in_use;
 	uint8_t nfrag;
+	char /*enum uri_path_states */ ups;
+	char /*enum uri_esc_states */ ues;
+
+	char esc_stash;
+	char post_literal_equal;
+	uint8_t /* enum lws_token_indexes */ parser_state;
 };
 
 /*
@@ -798,9 +816,7 @@ struct lws_context_per_thread {
 	pthread_mutex_t lock;
 #endif
 	struct lws_pollfd *fds;
-#if defined(LWS_WITH_ESP8266)
-	struct lws **lws_vs_fds_index;
-#endif
+	volatile struct lws_foreign_thread_pollfd * volatile foreign_pfd_list;
 	struct lws *rx_draining_ext_list;
 	struct lws *tx_draining_ext_list;
 	struct lws *timeout_list;
@@ -846,9 +862,13 @@ struct lws_context_per_thread {
 	unsigned char *serv_buf;
 #ifdef _WIN32
 	WSAEVENT *events;
-#else
-	lws_sockfd_type dummy_pipe_fds[2];
 #endif
+	lws_sockfd_type dummy_pipe_fds[2];
+	struct lws *pipe_wsi;
+
+	volatile unsigned char inside_poll;
+	volatile unsigned char foreign_spinlock;
+
 	unsigned int fds_count;
 	uint32_t ah_pool_length;
 
@@ -874,12 +894,21 @@ enum lws_h2_settings {
 	H2SET_INITIAL_WINDOW_SIZE,
 	H2SET_MAX_FRAME_SIZE,
 	H2SET_MAX_HEADER_LIST_SIZE,
+	H2SET_RESERVED7,
+	H2SET_ENABLE_CONNECT_PROTOCOL, /* defined in mcmanus-httpbis-h2-ws-02 */
 
 	H2SET_COUNT /* always last */
 };
 
 struct http2_settings {
 	uint32_t s[H2SET_COUNT];
+};
+
+struct lws_timed_vh_protocol {
+	struct lws_timed_vh_protocol *next;
+	const struct lws_protocols *protocol;
+	time_t time;
+	int reason;
 };
 
 /*
@@ -900,8 +929,9 @@ struct http2_settings {
  *    SSL SNI -> wsi -> bind after SSL negotiation
  */
 
+struct lws_tls_ss_pieces;
+
 struct lws_vhost {
-#if !defined(LWS_WITH_ESP8266)
 	char http_proxy_address[128];
 	char proxy_basic_auth_token[128];
 #if defined(LWS_WITH_HTTP2)
@@ -912,11 +942,6 @@ struct lws_vhost {
 	char socks_user[96];
 	char socks_password[96];
 #endif
-#endif
-#if defined(LWS_WITH_ESP8266)
-	/* listen sockets need a place to hang their hat */
-	esp_tcp tcp;
-#endif
 	struct lws_conn_stats conn_stats;
 	struct lws_context *context;
 	struct lws_vhost *vhost_next;
@@ -924,7 +949,9 @@ struct lws_vhost {
 	struct lws *lserv_wsi;
 	const char *name;
 	const char *iface;
-#if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32) && !defined(OPTEE_TA) && !defined(WIN32)
+	char *alloc_cert_path;
+	char *key_path;
+#if !defined(LWS_WITH_ESP32) && !defined(OPTEE_TA) && !defined(WIN32)
 	int bind_iface;
 #endif
 	const struct lws_protocols *protocols;
@@ -933,15 +960,18 @@ struct lws_vhost {
 	const struct lws_protocol_vhost_options *headers;
 	struct lws **same_vh_protocol_list;
 #ifdef LWS_OPENSSL_SUPPORT
-	SSL_CTX *ssl_ctx;
-	SSL_CTX *ssl_client_ctx;
+	lws_tls_ctx *ssl_ctx;
+	lws_tls_ctx *ssl_client_ctx;
+	struct lws_tls_ss_pieces *ss; /* for acme tls certs */
+	char ecdh_curve[16];
 #endif
 #if defined(LWS_WITH_MBEDTLS)
-	X509 *x509_client_CA;
+	lws_tls_x509 *x509_client_CA;
 #endif
 #ifndef LWS_NO_EXTENSIONS
 	const struct lws_extension *extensions;
 #endif
+	struct lws_timed_vh_protocol *timed_vh_protocol_list;
 	void *user;
 
 	int listen_port;
@@ -969,6 +999,8 @@ struct lws_vhost {
 
 	unsigned int created_vhost_protocols:1;
 	unsigned int being_destroyed:1;
+	unsigned int skipped_certs:1;
+	unsigned int acme_challenge:1;
 
 	unsigned char default_protocol_index;
 	unsigned char raw_protocol_index;
@@ -1019,7 +1051,10 @@ struct lws_peer {
 struct lws_context {
 	time_t last_timeout_check_s;
 	time_t last_ws_ping_pong_check_s;
+	time_t last_cert_check_s;
 	time_t time_up;
+	time_t time_discontiguity;
+	time_t time_fixup;
 	const struct lws_plat_file_ops *fops;
 	struct lws_plat_file_ops fops_platform;
 #if defined(LWS_WITH_HTTP2)
@@ -1038,14 +1073,7 @@ struct lws_context {
 /* different implementation between unix and windows */
 	struct lws_fd_hashtable fd_hashtable[FD_HASHTABLE_MODULUS];
 #else
-#if defined(LWS_WITH_ESP8266)
-	struct espconn **connpool; /* .reverse points to the wsi */
-	void *rxd;
-	int rxd_len;
-	os_timer_t to_timer;
-#else
 	struct lws **lws_lookup;  /* fd to wsi */
-#endif
 #endif
 	struct lws_vhost *vhost_list;
 	struct lws_vhost *vhost_pending_destruction_list;
@@ -1173,6 +1201,9 @@ lws_restart_ws_ping_pong_timer(struct lws *wsi);
 struct lws *
 lws_adopt_socket_vhost(struct lws_vhost *vh, lws_sockfd_type accept_fd);
 
+int
+lws_jws_base64_enc(const char *in, size_t in_len, char *out, size_t out_max);
+
 
 enum {
 	LWS_EV_READ = (1 << 0),
@@ -1244,6 +1275,8 @@ LWS_EXTERN void lws_feature_status_libuv(struct lws_context_creation_info *info)
 #if defined(LWS_WITH_LIBEVENT)
 LWS_EXTERN void
 lws_libevent_accept(struct lws *new_wsi, lws_sock_file_fd_type desc);
+LWS_VISIBLE void
+lws_libevent_destroy(struct lws *wsi);
 LWS_EXTERN void
 lws_libevent_io(struct lws *wsi, int flags);
 LWS_EXTERN int
@@ -1256,6 +1289,7 @@ lws_libevent_run(const struct lws_context *context, int tsi);
 LWS_EXTERN void lws_feature_status_libevent(struct lws_context_creation_info *info);
 #else
 #define lws_libevent_accept(_a, _b) ((void) 0)
+#define lws_libevent_destroy(_a) ((void) 0)
 #define lws_libevent_io(_a, _b) ((void) 0)
 #define lws_libevent_init_fd_table(_a) (0)
 #define lws_libevent_run(_a, _b) ((void) 0)
@@ -1298,49 +1332,18 @@ enum uri_esc_states {
 	URIES_SEEN_PERCENT_H1,
 };
 
-/* notice that these union members:
- *
- *  hdr
- *  http
- *  http2
- *
- * all have a pointer to allocated_headers struct as their first member.
- *
- * It means for allocated_headers access, the three union paths can all be
- * used interchangeably to access the same data
- */
-
 
 #ifndef LWS_NO_CLIENT
 struct client_info_stash {
-	char address[256];
-	char path[4096];
-	char host[256];
-	char origin[256];
-	char protocol[256];
-	char method[16];
-	char iface[16];
+	char *address;
+	char *path;
+	char *host;
+	char *origin;
+	char *protocol;
+	char *method;
+	char *iface;
 };
 #endif
-
-struct _lws_header_related {
-	/* MUST be first in struct */
-	struct allocated_headers *ah;
-	struct lws *ah_wait_list;
-	unsigned char *preamble_rx;
-#ifndef LWS_NO_CLIENT
-	struct client_info_stash *stash;
-#endif
-	unsigned int preamble_rx_len;
-	enum uri_path_states ups;
-	enum uri_esc_states ues;
-	short lextable_pos;
-	unsigned int current_token_limit;
-
-	char esc_stash;
-	char post_literal_equal;
-	unsigned char parser_state; /* enum lws_token_indexes */
-};
 
 #if defined(LWS_WITH_RANGES)
 enum range_states {
@@ -1370,14 +1373,6 @@ lws_ranges_reset(struct lws_range_parsing *rp);
 #endif
 
 struct _lws_http_mode_related {
-	/* MUST be first in struct */
-	struct allocated_headers *ah; /* mirroring  _lws_header_related */
-	struct lws *ah_wait_list;
-	unsigned char *preamble_rx;
-#ifndef LWS_NO_CLIENT
-	struct client_info_stash *stash;
-#endif
-	unsigned int preamble_rx_len;
 	struct lws *new_wsi_list;
 	lws_filepos_t filepos;
 	lws_filepos_t filelen;
@@ -1669,12 +1664,6 @@ struct lws_h2_netconn {
 };
 
 struct _lws_h2_related {
-	/*
-	 * having this first lets us also re-use all HTTP union code
-	 * and in turn, http_mode_related has allocated headers in right
-	 * place so we can use the header apis on the wsi directly still
-	 */
-	struct _lws_http_mode_related http; /* MUST BE FIRST IN STRUCT */
 
 	struct lws_h2_netconn *h2n; /* malloc'd for root net conn */
 	struct lws *parent_wsi;
@@ -1699,40 +1688,40 @@ struct _lws_h2_related {
 
 	uint16_t round_robin_POLLOUT;
 	uint16_t count_POLLOUT_children;
+
 	uint8_t h2_state; /* the RFC7540 state of the connection */
 	uint8_t weight;
-
 	uint8_t initialized;
 };
 
-#define HTTP2_IS_TOPLEVEL_WSI(wsi) (!wsi->u.h2.parent_wsi)
+#define HTTP2_IS_TOPLEVEL_WSI(wsi) (!wsi->h2.parent_wsi)
 
 #endif
 
 struct _lws_websocket_related {
-	/* cheapest way to deal with ah overlap with ws union transition */
-	struct _lws_header_related hdr;
 	char *rx_ubuf;
-	unsigned int rx_ubuf_alloc;
 	struct lws *rx_draining_ext_list;
 	struct lws *tx_draining_ext_list;
+	/* Also used for close content... control opcode == < 128 */
+	uint8_t ping_payload_buf[128 - 3 + LWS_PRE];
+	uint8_t mask[4];
+
 	time_t time_next_ping_check;
 	size_t rx_packet_length;
-	unsigned int rx_ubuf_head;
-	unsigned char mask[4];
-	/* Also used for close content... control opcode == < 128 */
-	unsigned char ping_payload_buf[128 - 3 + LWS_PRE];
+	uint32_t rx_ubuf_head;
+	uint32_t rx_ubuf_alloc;
 
-	unsigned char ping_payload_len;
-	unsigned char mask_idx;
-	unsigned char opcode;
-	unsigned char rsv;
-	unsigned char rsv_first_msg;
+	uint8_t ping_payload_len;
+	uint8_t mask_idx;
+	uint8_t opcode;
+	uint8_t rsv;
+	uint8_t rsv_first_msg;
 	/* zero if no info, or length including 2-byte close code */
-	unsigned char close_in_ping_buffer_len;
-	unsigned char utf8;
-	unsigned char stashed_write_type;
-	unsigned char tx_draining_stashed_wp;
+	uint8_t close_in_ping_buffer_len;
+	uint8_t utf8;
+	uint8_t stashed_write_type;
+	uint8_t tx_draining_stashed_wp;
+	uint8_t ietf_spec_revision;
 
 	unsigned int final:1;
 	unsigned int frame_is_binary:1;
@@ -1778,17 +1767,21 @@ struct lws_cgi {
 	unsigned char *headers_pos;
 	unsigned char *headers_dumped;
 	unsigned char *headers_end;
+
+	char summary[128];
+
 	lws_filepos_t content_length;
 	lws_filepos_t content_length_seen;
+
 	int pipe_fds[3][2];
 	int match[SIGNIFICANT_HDR_COUNT];
+	char l[12];
 	int pid;
 	int response_code;
 	int lp;
-	char l[12];
 
-	unsigned int being_closed:1;
-	unsigned int explicitly_chunked:1;
+	unsigned char being_closed:1;
+	unsigned char explicitly_chunked:1;
 
 	unsigned char chunked_grace;
 };
@@ -1826,18 +1819,12 @@ struct lws_access_log {
 #endif
 
 struct lws {
-
 	/* structs */
-	/* members with mutually exclusive lifetimes are unionized */
 
-	union u {
-		struct _lws_http_mode_related http;
+	struct _lws_http_mode_related http;
 #ifdef LWS_WITH_HTTP2
-		struct _lws_h2_related h2;
+	struct _lws_h2_related h2;
 #endif
-		struct _lws_header_related hdr;
-		struct _lws_websocket_related ws;
-	} u;
 
 	/* lifetime members */
 
@@ -1850,7 +1837,6 @@ struct lws {
 #ifdef LWS_WITH_ACCESS_LOG
 	struct lws_access_log access_log;
 #endif
-	time_t pending_timeout_limit;
 
 	/* pointers */
 
@@ -1859,17 +1845,24 @@ struct lws {
 	struct lws *parent; /* points to parent, if any */
 	struct lws *child_list; /* points to first child */
 	struct lws *sibling_list; /* subsequent children at same level */
+	struct _lws_websocket_related *ws; /* allocated if we upgrade to ws */
 #ifdef LWS_WITH_CGI
 	struct lws_cgi *cgi; /* wsi being cgi master have one of these */
 #endif
 	const struct lws_protocols *protocol;
 	struct lws **same_vh_protocol_prev, *same_vh_protocol_next;
+	/* we get on the list if either the timeout or the timer is valid */
 	struct lws *timeout_list;
 	struct lws **timeout_list_prev;
 #if defined(LWS_WITH_PEER_LIMITS)
 	struct lws_peer *peer;
 #endif
-
+	struct allocated_headers *ah;
+	struct lws *ah_wait_list;
+	unsigned char *preamble_rx;
+#ifndef LWS_NO_CLIENT
+	struct client_info_stash *stash;
+#endif
 	void *user_space;
 	void *opaque_parent_data;
 	/* rxflow handling */
@@ -1877,23 +1870,14 @@ struct lws {
 	/* truncated send handling */
 	unsigned char *trunc_alloc; /* non-NULL means buffering in progress */
 
-#if defined (LWS_WITH_ESP8266)
-	void *premature_rx;
-	unsigned short prem_rx_size, prem_rx_pos;
-#endif
-
 #ifndef LWS_NO_EXTENSIONS
 	const struct lws_extension *active_extensions[LWS_MAX_EXTENSIONS_ACTIVE];
 	void *act_ext_user[LWS_MAX_EXTENSIONS_ACTIVE];
 #endif
 #ifdef LWS_OPENSSL_SUPPORT
-	SSL *ssl;
-	BIO *client_bio;
+	lws_tls_conn *ssl;
+	lws_tls_bio *client_bio;
 	struct lws *pending_read_list_prev, *pending_read_list_next;
-#if defined(LWS_WITH_STATS)
-	uint64_t accept_start_us;
-	char seen_rx;
-#endif
 #endif
 #ifdef LWS_WITH_HTTP_PROXY
 	struct lws_rewrite *rw;
@@ -1905,11 +1889,18 @@ struct lws {
 	lws_sock_file_fd_type desc; /* .filefd / .sockfd */
 #if defined(LWS_WITH_STATS)
 	uint64_t active_writable_req_us;
+#if defined(LWS_OPENSSL_SUPPORT)
+	uint64_t accept_start_us;
 #endif
+#endif
+	time_t pending_timeout_set;
+	time_t pending_timer_set;
+
 	/* ints */
 	int position_in_fds_table;
 	uint32_t rxflow_len;
 	uint32_t rxflow_pos;
+	uint32_t preamble_rx_len;
 	unsigned int trunc_alloc_len; /* size of malloc */
 	unsigned int trunc_offset; /* where we are in terms of spilling */
 	unsigned int trunc_len; /* how much is buffered */
@@ -1921,18 +1912,19 @@ struct lws {
 	unsigned int hdr_parsing_completed:1;
 	unsigned int http2_substream:1;
 	unsigned int upgraded_to_http2:1;
+	unsigned int h2_stream_carries_ws:1;
 	unsigned int seen_nonpseudoheader:1;
 	unsigned int listener:1;
 	unsigned int user_space_externally_allocated:1;
 	unsigned int socket_is_permanently_unusable:1;
 	unsigned int rxflow_change_to:2;
-	unsigned int more_rx_waiting:1; /* has to live here since ah may stick to end */
 	unsigned int conn_stat_done:1;
 	unsigned int cache_reuse:1;
 	unsigned int cache_revalidate:1;
 	unsigned int cache_intermediaries:1;
 	unsigned int favoured_pollin:1;
 	unsigned int sending_chunked:1;
+	unsigned int interpreting:1;
 	unsigned int already_did_cce:1;
 	unsigned int told_user_closed:1;
 	unsigned int waiting_to_send_close_frame:1;
@@ -1942,11 +1934,13 @@ struct lws {
 	unsigned int cgi_stdout_zero_length:1;
 	unsigned int seen_zero_length_recv:1;
 	unsigned int rxflow_will_be_applied:1;
+	unsigned int event_pipe:1;
 
-#if defined(LWS_WITH_ESP8266)
-	unsigned int pending_send_completion:3;
-	unsigned int close_is_pending_send_completion:1;
-#endif
+	unsigned int could_have_pending:1; /* detect back-to-back writes */
+
+	unsigned int timer_active:1;
+	unsigned int outer_will_close:1;
+
 #ifdef LWS_WITH_ACCESS_LOG
 	unsigned int access_log_pending:1;
 #endif
@@ -1972,22 +1966,20 @@ struct lws {
 	unsigned int redirect_to_https:1;
 #endif
 
-	/* volatile to make sure code is aware other thread can change */
-	volatile unsigned int handling_pollout:1;
-	volatile unsigned int leave_pollout_active:1;
-
 #ifndef LWS_NO_CLIENT
 	unsigned short c_port;
 #endif
+	unsigned short pending_timeout_limit;
+	unsigned short pending_timer_limit;
+
+	uint8_t state; /* enum lws_connection_states */
+	uint8_t mode; /* enum connection_mode */
 
 	/* chars */
 #ifndef LWS_NO_EXTENSIONS
-	unsigned char count_act_ext;
+	uint8_t count_act_ext;
 #endif
-	uint8_t ietf_spec_revision;
-	char mode; /* enum connection_mode */
-	char state; /* enum lws_connection_states */
-	char state_pre_close;
+	uint8_t state_pre_close;
 	char lws_rx_parse_state; /* enum lws_rx_parse_state */
 	char rx_frame_type; /* enum lws_write_protocol */
 	char pending_timeout; /* enum pending_timeout */
@@ -2005,6 +1997,12 @@ struct lws {
 #if defined(LWS_WITH_CGI) || !defined(LWS_NO_CLIENT)
 	char reason_bf; /* internal writeable callback reason bitfield */
 #endif
+#if defined(LWS_WITH_STATS) && defined(LWS_OPENSSL_SUPPORT)
+	char seen_rx;
+#endif
+	/* volatile to make sure code is aware other thread can change */
+	volatile char handling_pollout;
+	volatile char leave_pollout_active;
 };
 
 #define lws_is_flowcontrolled(w) (!!(wsi->rxflow_bitmap))
@@ -2030,6 +2028,9 @@ LWS_EXTERN int
 remove_wsi_socket_from_fds(struct lws *wsi);
 LWS_EXTERN int
 lws_rxflow_cache(struct lws *wsi, unsigned char *buf, int n, int len);
+
+LWS_EXTERN int
+lws_should_be_on_timeout_list(struct lws *wsi);
 
 #ifndef LWS_LATENCY
 static inline void
@@ -2069,7 +2070,10 @@ lws_b64_selftest(void);
 LWS_EXTERN int
 lws_service_flag_pending(struct lws_context *context, int tsi);
 
-#if defined(_WIN32) || defined(LWS_WITH_ESP8266)
+LWS_EXTERN int
+lws_timed_callback_remove(struct lws_vhost *vh, struct lws_timed_vh_protocol *p);
+
+#if defined(_WIN32)
 LWS_EXTERN struct lws *
 wsi_from_fd(const struct lws_context *context, lws_sockfd_type fd);
 
@@ -2079,9 +2083,9 @@ insert_wsi(struct lws_context *context, struct lws *wsi);
 LWS_EXTERN int
 delete_from_fd(struct lws_context *context, lws_sockfd_type fd);
 #else
-#define wsi_from_fd(A,B)  A->lws_lookup[B]
-#define insert_wsi(A,B)   assert(A->lws_lookup[B->desc.sockfd] == 0); A->lws_lookup[B->desc.sockfd]=B
-#define delete_from_fd(A,B) A->lws_lookup[B]=0
+#define wsi_from_fd(A,B)  A->lws_lookup[B - lws_plat_socket_offset()]
+#define insert_wsi(A,B)   assert(A->lws_lookup[B->desc.sockfd - lws_plat_socket_offset()] == 0); A->lws_lookup[B->desc.sockfd - lws_plat_socket_offset()]=B
+#define delete_from_fd(A,B) A->lws_lookup[B - lws_plat_socket_offset()]=0
 #endif
 
 LWS_EXTERN int LWS_WARN_UNUSED_RESULT
@@ -2092,7 +2096,7 @@ lws_issue_raw(struct lws *wsi, unsigned char *buf, size_t len);
 
 
 LWS_EXTERN int LWS_WARN_UNUSED_RESULT
-lws_service_timeout_check(struct lws *wsi, unsigned int sec);
+lws_service_timeout_check(struct lws *wsi, time_t sec);
 
 LWS_EXTERN void
 lws_remove_from_timeout_list(struct lws *wsi);
@@ -2118,6 +2122,9 @@ lws_client_connect_via_info2(struct lws *wsi);
 
 LWS_EXTERN int
 _lws_destroy_ah(struct lws_context_per_thread *pt, struct allocated_headers *ah);
+
+LWS_EXTERN void
+lws_client_stash_destroy(struct lws *wsi);
 
 /*
  * EXTENSIONS
@@ -2171,7 +2178,8 @@ LWS_EXTERN int
 lws_h2_settings(struct lws *nwsi, struct http2_settings *settings,
 				     unsigned char *buf, int len);
 LWS_EXTERN int
-lws_h2_parser(struct lws *wsi, unsigned char c);
+lws_h2_parser(struct lws *wsi, unsigned char *in, lws_filepos_t inlen,
+	      lws_filepos_t *inused);
 LWS_EXTERN int lws_h2_do_pps_send(struct lws *wsi);
 LWS_EXTERN int lws_h2_frame_write(struct lws *wsi, int type, int flags,
 				     unsigned int sid, unsigned int len,
@@ -2212,9 +2220,14 @@ LWS_EXTERN void
 lws_pps_schedule(struct lws *wsi, struct lws_h2_protocol_send *pss);
 
 LWS_EXTERN const struct http2_settings lws_h2_defaults;
+LWS_EXTERN int
+lws_h2_ws_handshake(struct lws *wsi);
 #else
 #define lws_h2_configure_if_upgraded(x)
 #endif
+
+LWS_EXTERN int
+lws_plat_socket_offset(void);
 
 LWS_EXTERN int
 lws_plat_set_socket_options(struct lws_vhost *vhost, lws_sockfd_type fd);
@@ -2274,17 +2287,10 @@ LWS_EXTERN int get_daemonize_pid();
 #define get_daemonize_pid() (0)
 #endif
 
-#if !defined(LWS_WITH_ESP8266)
 LWS_EXTERN int LWS_WARN_UNUSED_RESULT
 interface_to_sa(struct lws_vhost *vh, const char *ifname,
 		struct sockaddr_in *addr, size_t addrlen);
-#endif
 LWS_EXTERN void lwsl_emit_stderr(int level, const char *line);
-
-enum lws_ssl_capable_status {
-	LWS_SSL_CAPABLE_ERROR = -1,
-	LWS_SSL_CAPABLE_MORE_SERVICE = -2,
-};
 
 #ifndef LWS_OPENSSL_SUPPORT
 #define LWS_SSL_ENABLED(context) (0)
@@ -2301,8 +2307,18 @@ enum lws_ssl_capable_status {
 #define lws_ssl_remove_wsi_from_buffered_list(_a)
 #define lws_context_init_ssl_library(_a)
 #define lws_ssl_anybody_has_buffered_read_tsi(_a, _b) (0)
+#define lws_tls_check_all_cert_lifetimes(_a)
+#define lws_tls_acme_sni_cert_destroy(_a)
 #else
 #define LWS_SSL_ENABLED(context) (context->use_ssl)
+
+enum lws_tls_extant {
+	LWS_TLS_EXTANT_NO,
+	LWS_TLS_EXTANT_YES,
+	LWS_TLS_EXTANT_ALTERNATIVE
+};
+LWS_EXTERN enum lws_tls_extant
+lws_tls_use_any_upgrade_check_extant(const char *name);
 LWS_EXTERN int openssl_websocket_private_data_index;
 LWS_EXTERN int LWS_WARN_UNUSED_RESULT
 lws_ssl_capable_read(struct lws *wsi, unsigned char *buf, int len);
@@ -2332,15 +2348,82 @@ LWS_EXTERN void
 lws_ssl_elaborate_error(void);
 LWS_EXTERN int
 lws_ssl_anybody_has_buffered_read_tsi(struct lws_context *context, int tsi);
+LWS_EXTERN int
+lws_gate_accepts(struct lws_context *context, int on);
+LWS_EXTERN void
+lws_ssl_bind_passphrase(lws_tls_ctx *ssl_ctx, struct lws_context_creation_info *info);
+LWS_EXTERN void
+lws_ssl_info_callback(const lws_tls_conn *ssl, int where, int ret);
+LWS_EXTERN int
+lws_tls_openssl_cert_info(X509 *x509, enum lws_tls_cert_info type,
+			  union lws_tls_cert_info_results *buf, size_t len);
+LWS_EXTERN int
+lws_tls_check_all_cert_lifetimes(struct lws_context *context);
+LWS_EXTERN int
+lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
+			  const char *cert, const char *private_key,
+			  const char *mem_cert, size_t len_mem_cert,
+			  const char *mem_privkey, size_t mem_privkey_len);
+LWS_EXTERN enum lws_tls_extant
+lws_tls_generic_cert_checks(struct lws_vhost *vhost, const char *cert,
+			    const char *private_key);
+LWS_EXTERN int
+lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
+			const char *inbuf, lws_filepos_t inlen,
+		      uint8_t **buf, lws_filepos_t *amount);
 #ifndef LWS_NO_SERVER
 LWS_EXTERN int
 lws_context_init_server_ssl(struct lws_context_creation_info *info,
 			    struct lws_vhost *vhost);
+void
+lws_tls_acme_sni_cert_destroy(struct lws_vhost *vhost);
 #else
 #define lws_context_init_server_ssl(_a, _b) (0)
+#define lws_tls_acme_sni_cert_destroy(_a)
 #endif
 LWS_EXTERN void
 lws_ssl_destroy(struct lws_vhost *vhost);
+LWS_EXTERN char *
+lws_ssl_get_error_string(int status, int ret, char *buf, size_t len);
+
+/*
+ * lws_tls_ abstract backend implementations
+ */
+
+LWS_EXTERN int
+lws_tls_server_client_cert_verify_config(struct lws_vhost *vh);
+LWS_EXTERN int
+lws_tls_server_vhost_backend_init(struct lws_context_creation_info *info,
+				  struct lws_vhost *vhost, struct lws *wsi);
+LWS_EXTERN int
+lws_tls_server_new_nonblocking(struct lws *wsi, lws_sockfd_type accept_fd);
+
+LWS_EXTERN enum lws_ssl_capable_status
+lws_tls_server_accept(struct lws *wsi);
+
+LWS_EXTERN enum lws_ssl_capable_status
+lws_tls_server_abort_connection(struct lws *wsi);
+
+LWS_EXTERN enum lws_ssl_capable_status
+lws_tls_shutdown(struct lws *wsi);
+
+LWS_EXTERN enum lws_ssl_capable_status
+lws_tls_client_connect(struct lws *wsi);
+LWS_EXTERN int
+lws_tls_client_confirm_peer_cert(struct lws *wsi);
+LWS_EXTERN int
+lws_tls_client_create_vhost_context(struct lws_vhost *vh,
+				    struct lws_context_creation_info *info,
+				    const char *cipher_list,
+				    const char *ca_filepath,
+				    const char *cert_filepath,
+				    const char *private_key_filepath);
+
+LWS_EXTERN lws_tls_ctx *
+lws_tls_ctx_from_wsi(struct lws *wsi);
+LWS_EXTERN int
+lws_ssl_get_error(struct lws *wsi, int n);
+
 /* HTTP2-related */
 
 #ifdef LWS_WITH_HTTP2
@@ -2409,6 +2492,11 @@ lws_ssl_capable_write_no_ssl(struct lws *wsi, unsigned char *buf, int len);
 LWS_EXTERN int LWS_WARN_UNUSED_RESULT
 lws_ssl_pending_no_ssl(struct lws *wsi);
 
+int
+lws_tls_check_cert_lifetime(struct lws_vhost *vhost);
+
+int lws_jws_selftest(void);
+
 #ifdef LWS_WITH_HTTP_PROXY
 struct lws_rewrite {
 	hubbub_parser *parser;
@@ -2420,7 +2508,7 @@ struct lws_rewrite {
 };
 static LWS_INLINE int hstrcmp(hubbub_string *s, const char *p, int len)
 {
-	if (s->len != len)
+	if ((int)s->len != len)
 		return 1;
 
 	return strncmp((const char *)s->ptr, p, len);
@@ -2446,7 +2534,7 @@ lws_context_init_client_ssl(struct lws_context_creation_info *info,
 			    struct lws_vhost *vhost);
 
 LWS_EXTERN void
-lws_ssl_info_callback(const SSL *ssl, int where, int ret);
+lws_ssl_info_callback(const lws_tls_conn *ssl, int where, int ret);
 
 #else
 	#define lws_context_init_client_ssl(_a, _b) (0)
@@ -2520,6 +2608,15 @@ void lws_free(void *p);
 #define lws_free_set_NULL(P)	do { lws_realloc(P, 0, "free"); (P) = NULL; } while(0)
 #endif
 
+int
+lws_plat_pipe_create(struct lws *wsi);
+int
+lws_plat_pipe_signal(struct lws *wsi);
+void
+lws_plat_pipe_close(struct lws *wsi);
+int
+lws_create_event_pipes(struct lws_context *context);
+
 const struct lws_plat_file_ops *
 lws_vfs_select_fops(const struct lws_plat_file_ops *fops, const char *vfs_path,
 		    const char **vpath);
@@ -2569,13 +2666,15 @@ LWS_EXTERN int LWS_WARN_UNUSED_RESULT
 lws_check_utf8(unsigned char *state, unsigned char *buf, size_t len);
 LWS_EXTERN int alloc_file(struct lws_context *context, const char *filename, uint8_t **buf,
 		                lws_filepos_t *amount);
-LWS_EXTERN int alloc_pem_to_der_file(struct lws_context *context, const char *filename, uint8_t **buf,
-	       lws_filepos_t *amount);
+
 
 LWS_EXTERN void
 lws_same_vh_protocol_remove(struct lws *wsi);
 LWS_EXTERN void
 lws_same_vh_protocol_insert(struct lws *wsi, int n);
+
+LWS_EXTERN int
+lws_broadcast(struct lws_context *context, int reason, void *in, size_t len);
 
 #if defined(LWS_WITH_STATS)
 void

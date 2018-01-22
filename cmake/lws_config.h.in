@@ -19,7 +19,6 @@
 
 #cmakedefine LWS_WITH_MBEDTLS
 #cmakedefine LWS_WITH_POLARSSL
-#cmakedefine LWS_WITH_ESP8266
 #cmakedefine LWS_WITH_ESP32
 
 #cmakedefine LWS_WITH_PLUGINS
@@ -93,6 +92,8 @@
 #cmakedefine LWS_HAVE_SSL_CTX_set1_param
 #cmakedefine LWS_HAVE_X509_VERIFY_PARAM_set1_host
 #cmakedefine LWS_HAVE_RSA_SET0_KEY
+#cmakedefine LWS_HAVE_X509_get_key_usage
+#cmakedefine LWS_HAVE_SSL_CTX_get0_certificate
 
 #cmakedefine LWS_HAVE_UV_VERSION_H
 
@@ -145,11 +146,16 @@
 #cmakedefine LWS_HAVE__ATOI64
 #cmakedefine LWS_HAVE__STAT32I64
 
+#cmakedefine LWS_WITH_JWS
+#cmakedefine LWS_WITH_ACME
+#cmakedefine LWS_WITH_SELFTESTS
+
 /* OpenSSL various APIs */
 
 #cmakedefine LWS_HAVE_TLS_CLIENT_METHOD
 #cmakedefine LWS_HAVE_TLSV1_2_CLIENT_METHOD
 #cmakedefine LWS_HAVE_SSL_SET_INFO_CALLBACK
+#cmakedefine LWS_HAVE_SSL_EXTRA_CHAIN_CERTS
 
 #cmakedefine LWS_HAS_INTPTR_T
 

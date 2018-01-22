@@ -1,5 +1,5 @@
 /*
- * libwebsockets - small server side websockets and web server implementation
+ * libwebsockets - lib/plat/lws-plat-esp32.c
  *
  * Copyright (C) 2010-2017 Andy Green <andy@warmcat.com>
  *
@@ -23,6 +23,17 @@
 #include "freertos/timers.h"
 #include <esp_attr.h>
 #include <esp_system.h>
+
+#include "apps/sntp/sntp.h"
+
+#include <lwip/sockets.h>
+#include <esp_task_wdt.h>
+
+int
+lws_plat_socket_offset(void)
+{
+	return LWIP_SOCKET_OFFSET;
+}
 
 /*
  * included from libwebsockets.c for unix builds
@@ -66,18 +77,23 @@ lws_send_pipe_choked(struct lws *wsi)
 #if defined(LWS_WITH_HTTP2)
 	wsi_eff = lws_get_network_wsi(wsi);
 #endif
+	int n;
+
+	/* the fact we checked implies we avoided back-to-back writes */
+	wsi_eff->could_have_pending = 0;
 
 	/* treat the fact we got a truncated send pending as if we're choked */
 	if (wsi_eff->trunc_len)
 		return 1;
 
 	FD_ZERO(&writefds);
-	FD_SET(wsi_eff->desc.sockfd, &writefds);
+	FD_SET(wsi_eff->desc.sockfd - LWIP_SOCKET_OFFSET, &writefds);
 
-	if (select(wsi_eff->desc.sockfd + 1, NULL, &writefds, NULL, &tv) < 1)
-		return 1;
+	n = select(wsi_eff->desc.sockfd + 1, NULL, &writefds, NULL, &tv);
+	if (n < 0)
+		return 1; /* choked */
 
-	return 0;
+	return !n; /* n = 0 = not writable = choked */
 }
 
 LWS_VISIBLE int
@@ -87,24 +103,14 @@ lws_poll_listen_fd(struct lws_pollfd *fd)
 	struct timeval tv = { 0, 0 };
 
 	FD_ZERO(&readfds);
-	FD_SET(fd->fd, &readfds);
+	FD_SET(fd->fd - LWIP_SOCKET_OFFSET, &readfds);
 
 	return select(fd->fd + 1, &readfds, NULL, NULL, &tv);
 }
 
-LWS_VISIBLE void
-lws_cancel_service_pt(struct lws *wsi)
-{
-}
-
-LWS_VISIBLE void
-lws_cancel_service(struct lws_context *context)
-{
-}
-
 LWS_VISIBLE void lwsl_emit_syslog(int level, const char *line)
 {
-	printf("%d: %s", level, line);
+	lwsl_emit_stderr(level, line);
 }
 
 LWS_VISIBLE LWS_EXTERN int
@@ -143,16 +149,16 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 		goto faked_service;
 
 	if (!context->service_tid_detected) {
-		struct lws _lws;
+		struct lws *_lws = lws_zalloc(sizeof(*_lws), "tid probe");
 
-		memset(&_lws, 0, sizeof(_lws));
-		_lws.context = context;
+		_lws->context = context;
 
 		context->service_tid_detected =
 			context->vhost_list->protocols[0].callback(
-			&_lws, LWS_CALLBACK_GET_THREAD_ID, NULL, NULL, 0);
+			_lws, LWS_CALLBACK_GET_THREAD_ID, NULL, NULL, 0);
 		context->service_tid = context->service_tid_detected;
 		context->service_tid_detected = 1;
+		lws_free(_lws);
 	}
 
 	/*
@@ -182,23 +188,34 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 			if (pt->fds[n].fd >= max_fd)
 				max_fd = pt->fds[n].fd;
 			if (pt->fds[n].events & LWS_POLLIN)
-				FD_SET(pt->fds[n].fd, &readfds);
+				FD_SET(pt->fds[n].fd - LWIP_SOCKET_OFFSET, &readfds);
 			if (pt->fds[n].events & LWS_POLLOUT)
-				FD_SET(pt->fds[n].fd, &writefds);
-			FD_SET(pt->fds[n].fd, &errfds);
+				FD_SET(pt->fds[n].fd - LWIP_SOCKET_OFFSET, &writefds);
+			FD_SET(pt->fds[n].fd - LWIP_SOCKET_OFFSET, &errfds);
 		}
 
 		n = select(max_fd + 1, &readfds, &writefds, &errfds, ptv);
-		for (n = 0; n < pt->fds_count; n++) {
-			if (FD_ISSET(pt->fds[n].fd, &readfds))
-				pt->fds[n].revents |= LWS_POLLIN;
-			if (FD_ISSET(pt->fds[n].fd, &writefds))
-				pt->fds[n].revents |= LWS_POLLOUT;
-			if (FD_ISSET(pt->fds[n].fd, &errfds))
-				pt->fds[n].revents |= LWS_POLLHUP;
+		n = 0;
+		for (m = 0; m < pt->fds_count; m++) {
+			c = 0;
+			if (FD_ISSET(pt->fds[m].fd - LWIP_SOCKET_OFFSET, &readfds)) {
+				pt->fds[m].revents |= LWS_POLLIN;
+				c = 1;
+			}
+			if (FD_ISSET(pt->fds[m].fd - LWIP_SOCKET_OFFSET, &writefds)) {
+				pt->fds[m].revents |= LWS_POLLOUT;
+				c = 1;
+			}
+			if (FD_ISSET(pt->fds[m].fd - LWIP_SOCKET_OFFSET, &errfds)) {
+				// lwsl_notice("errfds %d\n", pt->fds[m].fd);
+				pt->fds[m].revents |= LWS_POLLHUP;
+				c = 1;
+			}
+
+			if (c)
+				n++;
 		}
 	}
-
 
 #ifdef LWS_OPENSSL_SUPPORT
 	if (!pt->rx_draining_ext_list &&
@@ -249,7 +266,12 @@ lws_plat_check_connection_error(struct lws *wsi)
 LWS_VISIBLE int
 lws_plat_service(struct lws_context *context, int timeout_ms)
 {
-	return _lws_plat_service_tsi(context, timeout_ms, 0);
+	int n = _lws_plat_service_tsi(context, timeout_ms, 0);
+
+	lws_service_fd_tsi(context, NULL, 0);
+	esp_task_wdt_reset();
+
+	return n;
 }
 
 LWS_VISIBLE int
@@ -314,6 +336,24 @@ lws_plat_set_socket_options(struct lws_vhost *vhost, int fd)
 
 LWS_VISIBLE void
 lws_plat_drop_app_privileges(struct lws_context_creation_info *info)
+{
+}
+
+
+int
+lws_plat_pipe_create(struct lws *wsi)
+{
+	return 1;
+}
+
+int
+lws_plat_pipe_signal(struct lws *wsi)
+{
+	return 1;
+}
+
+void
+lws_plat_pipe_close(struct lws *wsi)
 {
 }
 
@@ -553,6 +593,8 @@ const struct http2_settings const lws_h2_defaults_esp32 = { {
 	/* H2SET_INITIAL_WINDOW_SIZE */		       65535,
 	/* H2SET_MAX_FRAME_SIZE */		       16384,
 	/* H2SET_MAX_HEADER_LIST_SIZE */	 	 512,
+	/* H2SET_RESERVED7 */				   0,
+	/* H2SET_ENABLE_CONNECT_PROTOCOL */		   1,
 }};
 #endif
 
@@ -593,7 +635,7 @@ LWS_VISIBLE void esp32_uvtimer_cb(TimerHandle_t t)
 
 /* helper functionality */
 
-#include "romfs.h"
+#include "misc/romfs.h"
 #include <esp_ota_ops.h>
 #include <tcpip_adapter.h>
 #include <esp_image_format.h>
@@ -604,7 +646,6 @@ LWS_VISIBLE void esp32_uvtimer_cb(TimerHandle_t t)
 struct lws_esp32 lws_esp32 = {
 	.model = CONFIG_LWS_MODEL_NAME,
 	.serial = "unknown",
-	.region = WIFI_COUNTRY_US, // default to safest option
 };
 
 /*
@@ -612,41 +653,46 @@ struct lws_esp32 lws_esp32 = {
  */
 
 enum lws_gapss {
-	LWS_GAPSS_INITIAL,	/* just started up, init and move to LWS_GAPSS_SCAN */
+	LWS_GAPSS_INITIAL,	/* just started up, init and move to
+				 * LWS_GAPSS_SCAN */
 	LWS_GAPSS_SCAN,		/*
-				 * Unconnected, scanning: AP known in one of the config
-				 * slots -> configure it, start timeout + LWS_GAPSS_STAT,
-				 * if no AP already up in same group with lower MAC,
-				 * after a random period start up our AP (LWS_GAPSS_AP)
+				 * Unconnected, scanning: AP known in one of the
+				 * config slots -> configure it, start timeout +
+				 * LWS_GAPSS_STAT, if no AP already up in same
+				 * group with lower MAC, after a random period
+				 * start up our AP (LWS_GAPSS_AP)
 				 */
 	LWS_GAPSS_AP,		/*
-				 * Trying to be the group AP... periodically do a scan
-				 * LWS_GAPSS_AP_SCAN, faster and then slower
+				 * Trying to be the group AP... periodically do
+				 * a scan LWS_GAPSS_AP_SCAN, faster and then
+				 * slower
        				 */
 	LWS_GAPSS_AP_SCAN,	/*
-				 * doing a scan while trying to be the group AP... if
-				 * we see a lower MAC being the AP for the same group
-				 * AP, abandon being an AP and join that AP as a
-				 * station
+				 * doing a scan while trying to be the group
+				 * AP... if we see a lower MAC being the AP for
+				 * the same group AP, abandon being an AP and
+				 * join that AP as a station
 				 */
 	LWS_GAPSS_STAT_GRP_AP,	/*
-				 * We have decided to join another group member who is
-				 * being the AP, as its MAC is lower than ours.  This
-				 * is a stable state, but we still do periodic scans
-				 * (LWS_GAPSS_STAT_GRP_AP_SCAN) and will always prefer
-				 * an AP configured in a slot.
+				 * We have decided to join another group member
+				 * who is being the AP, as its MAC is lower than
+				 * ours.  This is a stable state, but we still
+				 * do periodic scans LWS_GAPSS_STAT_GRP_AP_SCAN
+				 * and will always prefer an AP configured in a
+				 * slot.
 				 */
 	LWS_GAPSS_STAT_GRP_AP_SCAN,
 				/*
-				 * We have joined a group member who is doing the AP
-				 * job... we want to check every now and then if a
-				 * configured AP has appeared that we should better
-				 * use instead.  Otherwise stay in LWS_GAPSS_STAT_GRP_AP
+				 * We have joined a group member who is doing
+				 * the AP job... we want to check every now and
+				 * then if a configured AP has appeared that we
+				 * should better use instead.  Otherwise stay in
+				 * LWS_GAPSS_STAT_GRP_AP
 				 */
 	LWS_GAPSS_STAT,		/*
-				 * trying to connect to another non-group AP.  If we
-				 * don't get an IP within a timeout and retries,
-				 * blacklist it and go back 
+				 * trying to connect to another non-group AP.
+				 * If we don't get an IP within a timeout and
+				 * retries, blacklist it and go back
 				 */
 	LWS_GAPSS_STAT_HAPPY,
 };
@@ -663,13 +709,12 @@ static const char *gapss_str[] = {
 };
 
 static romfs_t lws_esp32_romfs;
-static TimerHandle_t leds_timer, scan_timer, debounce_timer
+static TimerHandle_t leds_timer, scan_timer, debounce_timer, association_timer
 #if !defined(CONFIG_LWS_IS_FACTORY_APPLICATION)
 , mdns_timer
 #endif
 ;
 static enum lws_gapss gapss = LWS_GAPSS_INITIAL;
-static char bdown;
 
 #define GPIO_SW 14
 
@@ -765,6 +810,28 @@ static void lws_esp32_scan_timer_cb(TimerHandle_t th)
 	if (n != ESP_OK)
 		lwsl_err("scan start failed %d\n", n);
 }
+
+static void lws_esp32_assoc_timer_cb(TimerHandle_t th)
+{
+	int n;
+
+	xTimerStop(association_timer, 0);
+
+	if (gapss == LWS_GAPSS_STAT_HAPPY) {
+		lwsl_debug("%s: saw we were happy\n", __func__);
+
+		return;
+	}
+
+	lwsl_notice("%s: forcing rescan\n", __func__);
+
+	lws_gapss_to(LWS_GAPSS_SCAN);
+	scan_ongoing = 0;
+	n = esp_wifi_scan_start(&scan_config, false);
+	if (n != ESP_OK)
+		lwsl_err("scan start failed %d\n", n);
+}
+
 
 #if !defined(CONFIG_LWS_IS_FACTORY_APPLICATION)
 
@@ -917,19 +984,20 @@ lws_esp32_button(int down)
 void IRAM_ATTR
 gpio_irq(void *arg)
 {
-	bdown ^= 1;
 	gpio_set_intr_type(GPIO_SW, GPIO_INTR_DISABLE);
 	xTimerStart(debounce_timer, 0);
-
-	lws_esp32_button(bdown);
 }
 
 static void lws_esp32_debounce_timer_cb(TimerHandle_t th)
 {
-	if (bdown)
+	if (lws_esp32.button_is_down)
 		gpio_set_intr_type(GPIO_SW, GPIO_INTR_POSEDGE);
 	else
 		gpio_set_intr_type(GPIO_SW, GPIO_INTR_NEGEDGE);
+
+	lws_esp32.button_is_down = gpio_get_level(GPIO_SW);
+
+	lws_esp32_button(lws_esp32.button_is_down);
 }
 
 
@@ -963,7 +1031,7 @@ end_scan()
 	int n, m;
 
 	count_ap_records = ARRAY_SIZE(ap_records);
-	if (esp_wifi_scan_get_ap_records(&count_ap_records, ap_records) != ESP_OK) {
+	if (esp_wifi_scan_get_ap_records(&count_ap_records, ap_records)) {
 		lwsl_err("%s: failed\n", __func__);
 		return;
 	}
@@ -972,7 +1040,7 @@ end_scan()
 		goto passthru;
 
 	if (gapss != LWS_GAPSS_SCAN) {
-		lwsl_notice("ignoring scan as gapss %s\n", gapss_str[gapss]);
+		lwsl_info("ignoring scan as gapss %s\n", gapss_str[gapss]);
 		goto passthru;
 	}
 
@@ -983,20 +1051,22 @@ end_scan()
 	    !lws_esp32.ssid[3][0])
 		goto passthru;
 
-	lwsl_notice("checking %d scan records\n", count_ap_records);
+	lwsl_info("checking %d scan records\n", count_ap_records);
 
 	for (n = 0; n < 4; n++) {
 
 		if (!lws_esp32.ssid[(n + try_slot + 1) & 3][0])
 			continue;
 
-		lwsl_notice("looking for %s\n", lws_esp32.ssid[(n + try_slot + 1) & 3]);
+		lwsl_debug("looking for %s\n",
+			    lws_esp32.ssid[(n + try_slot + 1) & 3]);
 
 		/* this ssid appears in scan results? */
 
 		for (m = 0; m < count_ap_records; m++) {
 			// lwsl_notice("  %s\n", ap_records[m].ssid);
-			if (strcmp((char *)ap_records[m].ssid, lws_esp32.ssid[(n + try_slot + 1) & 3]) == 0)
+			if (!strcmp((char *)ap_records[m].ssid,
+				    lws_esp32.ssid[(n + try_slot + 1) & 3]))
 				goto hit;
 		}
 
@@ -1005,18 +1075,23 @@ end_scan()
 hit:
 		m = (n + try_slot + 1) & 3;
 		try_slot = m;
-		lwsl_notice("Attempting connection with slot %d: %s:\n", m,
+		lwsl_info("Attempting connection with slot %d: %s:\n", m,
 				lws_esp32.ssid[m]);
 		/* set the ssid we last tried to connect to */
 		strncpy(lws_esp32.active_ssid, lws_esp32.ssid[m],
 				sizeof(lws_esp32.active_ssid) - 1);
 		lws_esp32.active_ssid[sizeof(lws_esp32.active_ssid) - 1] = '\0';
 
-		strncpy((char *)sta_config.sta.ssid, lws_esp32.ssid[m], sizeof(sta_config.sta.ssid) - 1);
-		strncpy((char *)sta_config.sta.password, lws_esp32.password[m], sizeof(sta_config.sta.password) - 1);
+		strncpy((char *)sta_config.sta.ssid, lws_esp32.ssid[m],
+			sizeof(sta_config.sta.ssid) - 1);
+		strncpy((char *)sta_config.sta.password, lws_esp32.password[m],
+			sizeof(sta_config.sta.password) - 1);
 
-		tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA, (const char *)&config.ap.ssid[7]);
+		tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA,
+					   (const char *)&config.ap.ssid[7]);
 		lws_gapss_to(LWS_GAPSS_STAT);
+		xTimerStop(association_timer, 0);
+		xTimerStart(association_timer, 0);
 
 		esp_wifi_set_config(WIFI_IF_STA, &sta_config);
 		esp_wifi_connect();
@@ -1028,7 +1103,8 @@ hit:
 
 passthru:
 	if (lws_esp32.scan_consumer)
-		lws_esp32.scan_consumer(count_ap_records, ap_records, lws_esp32.scan_consumer_arg);
+		lws_esp32.scan_consumer(count_ap_records, ap_records,
+					lws_esp32.scan_consumer_arg);
 
 }
 
@@ -1105,6 +1181,8 @@ esp_err_t lws_esp32_event_passthru(void *ctx, system_event_t *event)
 		/* fallthru */
 	case SYSTEM_EVENT_STA_DISCONNECTED:
 		lwsl_notice("SYSTEM_EVENT_STA_DISCONNECTED\n");
+		if (sntp_enabled())
+			sntp_stop();
 		lws_esp32.conn_ap = 0;
 		lws_esp32.inet = 0;
 		lws_esp32.sta_ip[0] = '\0';
@@ -1188,7 +1266,8 @@ esp_err_t lws_esp32_event_passthru(void *ctx, system_event_t *event)
 			}
 
 			if (!mem) {
-				struct lws_group_member *mem = lws_malloc(sizeof(*mem), "group");
+				struct lws_group_member *mem =
+					      lws_malloc(sizeof(*mem), "group");
 				if (mem) {
 					mem->last_seen = ~(uint64_t)0;
 					strcpy(mem->model, lws_esp32.model);
@@ -1196,27 +1275,35 @@ esp_err_t lws_esp32_event_passthru(void *ctx, system_event_t *event)
 					strcpy(mem->host, lws_esp32.hostname);
 					strcpy(mem->mac, lws_esp32.mac);
 					mem->flags = LWS_GROUP_FLAG_SELF;
-					lws_get_iframe_size(&mem->width, &mem->height);
-					memcpy(&mem->addr, &event->event_info.got_ip.ip_info.ip,
-							sizeof(mem->addr));
-					memcpy(&mem->addrv6, &event->event_info.got_ip6.ip6_info.ip,
-							sizeof(mem->addrv6));
+					lws_get_iframe_size(&mem->width,
+							    &mem->height);
+					memcpy(&mem->addr,
+					       &event->event_info.got_ip.ip_info.ip,
+					       sizeof(mem->addr));
+					memcpy(&mem->addrv6,
+					       &event->event_info.got_ip6.ip6_info.ip,
+					       sizeof(mem->addrv6));
 					mem->next = lws_esp32.first;
 					lws_esp32.first = mem;
 					lws_esp32.extant_group_members++;
 
-					lws_group_member_event_call(LWS_SYSTEM_GROUP_MEMBER_ADD, mem);
+					lws_group_member_event_call(
+					      LWS_SYSTEM_GROUP_MEMBER_ADD, mem);
 				}
 			} else { /* update our IP */
-					memcpy(&mem->addr, &event->event_info.got_ip.ip_info.ip,
-							sizeof(mem->addr));
-					memcpy(&mem->addrv6, &event->event_info.got_ip6.ip6_info.ip,
-							sizeof(mem->addrv6));
-					lws_group_member_event_call(LWS_SYSTEM_GROUP_MEMBER_CHANGE, mem);
+				memcpy(&mem->addr,
+				       &event->event_info.got_ip.ip_info.ip,
+				       sizeof(mem->addr));
+				memcpy(&mem->addrv6,
+				       &event->event_info.got_ip6.ip6_info.ip,
+				       sizeof(mem->addrv6));
+				lws_group_member_event_call(
+					   LWS_SYSTEM_GROUP_MEMBER_CHANGE, mem);
 			}
 
 
-			if (mdns_service_txt_set(lws_esp32.mdns, "_lwsgrmem", "_tcp", ARRAY_SIZE(txta),
+			if (mdns_service_txt_set(lws_esp32.mdns, "_lwsgrmem",
+						 "_tcp", ARRAY_SIZE(txta),
 						 (const char **)txta))
 				lwsl_notice("txt set failed\n");
 		} else
@@ -1227,6 +1314,11 @@ esp_err_t lws_esp32_event_passthru(void *ctx, system_event_t *event)
 #endif
 
 		lwsl_notice(" --- Got IP %s\n", lws_esp32.sta_ip);
+		if (!sntp_enabled()) {
+			sntp_setoperatingmode(SNTP_OPMODE_POLL);
+			sntp_setservername(0, "pool.ntp.org");
+			sntp_init();
+		}
 		break;
 
 	case SYSTEM_EVENT_SCAN_DONE:
@@ -1243,7 +1335,7 @@ esp_err_t lws_esp32_event_passthru(void *ctx, system_event_t *event)
 
 static lws_fop_fd_t IRAM_ATTR
 esp32_lws_fops_open(const struct lws_plat_file_ops *fops, const char *filename,
-                const char *vfs_path, lws_fop_flags_t *flags)
+                    const char *vfs_path, lws_fop_flags_t *flags)
 {
 	struct esp32_file *f = malloc(sizeof(*f));
 	lws_fop_fd_t fop_fd;
@@ -1337,16 +1429,18 @@ int
 lws_esp32_wlan_nvs_get(int retry)
 {
 	nvs_handle nvh;
-	char r[2], lws_esp32_force_ap = 0, slot[12];
+	char lws_esp32_force_ap = 0, slot[12];
 	size_t s;
 	uint8_t mac[6];
 	int n;
 
 	esp_efuse_mac_get_default(mac);
 	mac[5] |= 1; /* match the AP MAC */
-	snprintf(lws_esp32.serial, sizeof(lws_esp32.serial) - 1, "%02X%02X%02X", mac[3], mac[4], mac[5]);
-	snprintf(lws_esp32.mac, sizeof(lws_esp32.mac) - 1, "%02X%02X%02X%02X%02X%02X", mac[0],
-			mac[1], mac[2], mac[3], mac[4], mac[5]);
+	snprintf(lws_esp32.serial, sizeof(lws_esp32.serial) - 1,
+		 "%02X%02X%02X", mac[3], mac[4], mac[5]);
+	snprintf(lws_esp32.mac, sizeof(lws_esp32.mac) - 1,
+		 "%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3],
+		 mac[4], mac[5]);
 
 	ESP_ERROR_CHECK(nvs_open("lws-station", NVS_READWRITE, &nvh));
 
@@ -1375,11 +1469,6 @@ lws_esp32_wlan_nvs_get(int retry)
 	if (nvs_get_str(nvh, "opts", lws_esp32.opts, &s) != ESP_OK)
 		lws_esp32_force_ap = 1;
 
-	s = sizeof(r);
-	if (nvs_get_str(nvh, "region", r, &s) != ESP_OK)
-		lws_esp32_force_ap = 1;
-	else
-		lws_esp32.region = atoi(r);
 	lws_esp32.access_pw[0] = '\0';
 	nvs_get_str(nvh, "access_pw", lws_esp32.access_pw, &s);
 
@@ -1419,6 +1508,8 @@ lws_esp32_wlan_config(void)
 	};
 	int n;
 
+	lwsl_debug("%s\n", __func__);
+
 	ledc_timer_config(&ledc_timer);
 
 	lws_set_genled(LWSESP32_GENLED__INIT);
@@ -1431,6 +1522,8 @@ lws_esp32_wlan_config(void)
                           (TimerCallbackFunction_t)lws_esp32_scan_timer_cb);
         debounce_timer = xTimerCreate("lws_db", pdMS_TO_TICKS(100), 0, NULL,
                           (TimerCallbackFunction_t)lws_esp32_debounce_timer_cb);
+        association_timer = xTimerCreate("lws_assoc", pdMS_TO_TICKS(10000), 0, NULL,
+                          (TimerCallbackFunction_t)lws_esp32_assoc_timer_cb);
 
 #if !defined(CONFIG_LWS_IS_FACTORY_APPLICATION)
         mdns_timer = xTimerCreate("lws_mdns", pdMS_TO_TICKS(5000), 0, NULL,
@@ -1470,7 +1563,6 @@ lws_esp32_wlan_start_ap(void)
 
 	ESP_ERROR_CHECK( esp_wifi_init(&cfg));
 	ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM));
-	esp_wifi_set_country(lws_esp32.region);
 
 	ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_APSTA) );
 	ESP_ERROR_CHECK( esp_wifi_set_config(WIFI_IF_AP, &config) );
@@ -1480,7 +1572,8 @@ lws_esp32_wlan_start_ap(void)
 	esp_wifi_scan_start(&scan_config, false);
 
 	if (sta_config.sta.ssid[0]) {
-		tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA, (const char *)&config.ap.ssid[7]);
+		tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA,
+					   (const char *)&config.ap.ssid[7]);
 		esp_wifi_set_auto_connect(1);
 		ESP_ERROR_CHECK( esp_wifi_connect());
 		ESP_ERROR_CHECK( esp_wifi_set_config(WIFI_IF_STA, &sta_config));
@@ -1495,14 +1588,14 @@ lws_esp32_wlan_start_station(void)
 
 	ESP_ERROR_CHECK( esp_wifi_init(&cfg));
 	ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM));
-	esp_wifi_set_country(lws_esp32.region);
 
 	ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA));
 	ESP_ERROR_CHECK( esp_wifi_set_config(WIFI_IF_STA, &sta_config));
 
 	ESP_ERROR_CHECK( esp_wifi_start());
 
-	tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA, (const char *)&config.ap.ssid[7]);
+	tcpip_adapter_set_hostname(TCPIP_ADAPTER_IF_STA,
+				   (const char *)&config.ap.ssid[7]);
 	esp_wifi_set_auto_connect(1);
 	//ESP_ERROR_CHECK( esp_wifi_connect());
 
@@ -1512,7 +1605,8 @@ lws_esp32_wlan_start_station(void)
 const esp_partition_t *
 lws_esp_ota_get_boot_partition(void)
 {
-	const esp_partition_t *part = esp_ota_get_boot_partition(), *factory_part, *ota;
+	const esp_partition_t *part = esp_ota_get_boot_partition(),
+			      *factory_part, *ota;
 	esp_image_header_t eih, ota_eih;
 	uint32_t *p_force_factory_magic = (uint32_t *)LWS_MAGIC_REBOOT_TYPE_ADS;
 
@@ -1527,7 +1621,7 @@ lws_esp_ota_get_boot_partition(void)
 	if (eih.spi_mode == 0xff ||
 	    *p_force_factory_magic == LWS_MAGIC_REBOOT_TYPE_FORCED_FACTORY ||
 	    *p_force_factory_magic == LWS_MAGIC_REBOOT_TYPE_FORCED_FACTORY_BUTTON
-	   ) {
+	) {
 		/*
 		 * we believed we were going to boot OTA, but we fell
 		 * back to FACTORY in the bootloader when we saw it
@@ -1549,18 +1643,22 @@ lws_esp_ota_get_boot_partition(void)
 			 * it means we were just written and need to copy
 			 * ourselves into the FACTORY slot.
 			 */
-			lwsl_notice("Copying FACTORY update into place 0x%x len 0x%x\n",
-				    factory_part->address, factory_part->size);
-			esp_task_wdt_feed();
-			if (spi_flash_erase_range(factory_part->address, factory_part->size) != ESP_OK) {
+			lwsl_notice("Copying FACTORY update into place "
+				    "0x%x len 0x%x\n", factory_part->address,
+				    factory_part->size);
+			esp_task_wdt_reset();
+			if (spi_flash_erase_range(factory_part->address,
+						  factory_part->size)) {
 	               	        lwsl_err("spi: Failed to erase\n");
 	               	        goto retry;
 	               	}
 
 			for (n = 0; n < factory_part->size; n += sizeof(buf)) {
-				esp_task_wdt_feed();
-				spi_flash_read(part->address + n , buf, sizeof(buf));
-	                	if (spi_flash_write(factory_part->address + n, buf, sizeof(buf)) != ESP_OK) {
+				esp_task_wdt_reset();
+				spi_flash_read(part->address + n , buf,
+					       sizeof(buf));
+				if (spi_flash_write(factory_part->address + n,
+						    buf, sizeof(buf))) {
 	                	        lwsl_err("spi: Failed to write\n");
 	                	        goto retry;
 	                	}
@@ -1570,8 +1668,8 @@ lws_esp_ota_get_boot_partition(void)
 			spi_flash_erase_range(ota->address, 4096);
 
 			/*
-			 * with no viable OTA image, we will come back up in factory
-			 * where the user can reload the OTA image
+			 * with no viable OTA image, we will come back up in
+			 * factory where the user can reload the OTA image
 			 */
 			lwsl_notice("  FACTORY copy successful, rebooting\n");
 retry:
@@ -1595,19 +1693,17 @@ lws_esp32_set_creation_defaults(struct lws_context_creation_info *info)
 	part = lws_esp_ota_get_boot_partition();
 	(void)part;
 
+	info->vhost_name = "default";
 	info->port = 443;
-	info->fd_limit_per_thread = 10;
-	info->max_http_header_pool = 16;
-	info->max_http_header_data = 512;
-	info->pt_serv_buf_size = 2048;
+	info->fd_limit_per_thread = 16;
+	info->max_http_header_pool = 5;
+	info->max_http_header_data = 1024;
+	info->pt_serv_buf_size = 4096;
 	info->keepalive_timeout = 30;
 	info->timeout_secs = 30;
-	info->simultaneous_ssl_restriction = 4;
+	info->simultaneous_ssl_restriction = 2;
 	info->options = LWS_SERVER_OPTION_EXPLICIT_VHOSTS |
-		       LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-
-	info->ssl_cert_filepath = "ssl-pub.pem";
-	info->ssl_private_key_filepath = "ssl-pri.pem";
+		        LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 }
 
 int
@@ -1621,8 +1717,10 @@ lws_esp32_get_image_info(const esp_partition_t *part, struct lws_esp32_image *i,
 	spi_flash_read(part->address , &eih, sizeof(eih));
 	hdr = part->address + sizeof(eih);
 
-	if (eih.magic != ESP_IMAGE_HEADER_MAGIC)
+	if (eih.magic != ESP_IMAGE_HEADER_MAGIC) {
+		lwsl_notice("%s: bad image header magic\n", __func__);
 		return 1;
+	}
 
 	eis.data_len = 0;
 	while (eih.segment_count-- && eis.data_len != 0xffffffff) {
@@ -1649,6 +1747,154 @@ lws_esp32_get_image_info(const esp_partition_t *part, struct lws_esp32_image *i,
 	return 0;
 }
 
+static int
+_rngf(void *context, unsigned char *buf, size_t len)
+{
+	if ((size_t)lws_get_random(context, buf, len) == len)
+		return 0;
+
+	return -1;
+}
+
+int
+lws_esp32_selfsigned(struct lws_vhost *vhost)
+{
+	mbedtls_x509write_cert crt;
+	char subject[200];
+	mbedtls_pk_context mpk;
+	int buf_size = 4096, n;
+	uint8_t *buf = malloc(buf_size); /* malloc because given to user code */
+	mbedtls_mpi mpi;
+	nvs_handle nvh;
+	size_t s;
+
+	lwsl_notice("%s: %s\n", __func__, vhost->name);
+
+	if (!buf)
+		return -1;
+
+	if (nvs_open("lws-station", NVS_READWRITE, &nvh)) {
+		lwsl_notice("%s: can't open nvs\n", __func__);
+		free(buf);
+		return 1;
+	}
+
+	n = 0;
+	if (!nvs_get_blob(nvh, vhost->alloc_cert_path, NULL, &s))
+		n |= 1;
+	if (!nvs_get_blob(nvh, vhost->key_path, NULL, &s))
+		n |= 2;
+
+	nvs_close(nvh);
+	if (n == 3) {
+		lwsl_notice("%s: certs exist\n", __func__);
+		return 0; /* certs already exist */
+	}
+
+	lwsl_notice("%s: creating selfsigned initial certs\n", __func__);
+
+	mbedtls_x509write_crt_init(&crt);
+
+	mbedtls_pk_init(&mpk);
+	if (mbedtls_pk_setup(&mpk, mbedtls_pk_info_from_type(MBEDTLS_PK_RSA))) {
+		lwsl_notice("%s: pk_setup failed\n", __func__);
+		goto fail;
+	}
+	lwsl_notice("%s: generating 2048-bit RSA keypair... "
+		    "this may take a minute or so...\n", __func__);
+	n = mbedtls_rsa_gen_key(mbedtls_pk_rsa(mpk), _rngf, vhost->context,
+				2048, 65537);
+	if (n) {
+		lwsl_notice("%s: failed to generate keys\n", __func__);
+		goto fail1;
+	}
+	lwsl_notice("%s: keys done\n", __func__);
+
+	/* subject must be formatted like "C=TW,O=warmcat,CN=myserver" */
+
+	lws_snprintf(subject, sizeof(subject) - 1,
+		     "C=TW,ST=New Taipei City,L=Taipei,O=warmcat,CN=%s",
+		     lws_esp32.hostname);
+
+	if (mbedtls_x509write_crt_set_subject_name(&crt, subject)) {
+		lwsl_notice("set SN failed\n");
+		goto fail1;
+	}
+	mbedtls_x509write_crt_set_subject_key(&crt, &mpk);
+	if (mbedtls_x509write_crt_set_issuer_name(&crt, subject)) {
+		lwsl_notice("set IN failed\n");
+		goto fail1;
+	}
+	mbedtls_x509write_crt_set_issuer_key(&crt, &mpk);
+
+	lws_get_random(vhost->context, &n, sizeof(n));
+	lws_snprintf(subject, sizeof(subject), "%d", n);
+
+	mbedtls_mpi_init(&mpi);
+	mbedtls_mpi_read_string(&mpi, 10, subject);
+	mbedtls_x509write_crt_set_serial(&crt, &mpi);
+	mbedtls_mpi_free(&mpi);
+
+	mbedtls_x509write_crt_set_validity(&crt, "20171105235959",
+					   "20491231235959");
+
+	mbedtls_x509write_crt_set_key_usage(&crt,
+					    MBEDTLS_X509_KU_DIGITAL_SIGNATURE |
+					    MBEDTLS_X509_KU_KEY_ENCIPHERMENT);
+
+
+	mbedtls_x509write_crt_set_md_alg(&crt, MBEDTLS_MD_SHA256);
+
+	n = mbedtls_x509write_crt_pem(&crt, buf, buf_size, _rngf,
+				      vhost->context);
+	if (n < 0) {
+		lwsl_notice("%s: write crt der failed\n", __func__);
+		goto fail1;
+	}
+
+	lws_plat_write_cert(vhost, 0, 0, buf, strlen((const char *)buf));
+
+	if (mbedtls_pk_write_key_pem(&mpk, buf, buf_size)) {
+		lwsl_notice("write key pem failed\n");
+		goto fail1;
+	}
+
+	lws_plat_write_cert(vhost, 1, 0, buf, strlen((const char *)buf));
+
+	mbedtls_pk_free(&mpk);
+	mbedtls_x509write_crt_free(&crt);
+
+	lwsl_notice("%s: cert creation complete\n", __func__);
+
+	return n;
+
+fail1:
+	mbedtls_pk_free(&mpk);
+fail:
+	mbedtls_x509write_crt_free(&crt);
+	free(buf);
+
+	nvs_close(nvh);
+
+	return -1;
+}
+
+void
+lws_esp32_update_acme_info(void)
+{
+        int n;
+
+	n = lws_plat_read_file("acme-email", lws_esp32.le_email,
+			       sizeof(lws_esp32.le_email) - 1);
+	if (n >= 0)
+		lws_esp32.le_email[n] = '\0';
+
+	n = lws_plat_read_file("acme-cn", lws_esp32.le_dns,
+			       sizeof(lws_esp32.le_dns) - 1);
+	if (n >= 0)
+		lws_esp32.le_dns[n] = '\0';
+}
+
 struct lws_context *
 lws_esp32_init(struct lws_context_creation_info *info, struct lws_vhost **pvh)
 {
@@ -1656,27 +1902,8 @@ lws_esp32_init(struct lws_context_creation_info *info, struct lws_vhost **pvh)
 	struct lws_context *context;
 	struct lws_esp32_image i;
 	struct lws_vhost *vhost;
-	nvs_handle nvh;
+	struct lws wsi;
 	char buf[512];
-	size_t s;
-	int n;
-
-	ESP_ERROR_CHECK(nvs_open("lws-station", NVS_READWRITE, &nvh));
-	n = 0;
-	s = 1;
-	if (nvs_get_blob(nvh, "ssl-pub.pem", NULL, &s) == ESP_OK)
-		n = 1;
-	s = 1;
-	if (nvs_get_blob(nvh, "ssl-pri.pem", NULL, &s) == ESP_OK)
-		n |= 2;
-	nvs_close(nvh);
-
-	if (n != 3) {
-		/* we are not configured for SSL yet... fall back to port 80 / http */
-		info->port = 80;
-		info->options &= ~LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-		lwsl_notice("No SSL certs... using port 80\n");
-	}
 
 	context = lws_create_context(info);
 	if (context == NULL) {
@@ -1688,7 +1915,8 @@ lws_esp32_init(struct lws_context_creation_info *info, struct lws_vhost **pvh)
 	
 	lws_esp32_romfs = (romfs_t)i.romfs;
 	if (!romfs_mount_check(lws_esp32_romfs)) {
-		lwsl_err("Failed to mount ROMFS at %p 0x%x\n", lws_esp32_romfs, i.romfs);
+		lwsl_err("mount error on ROMFS at %p 0x%x\n", lws_esp32_romfs,
+			 i.romfs);
 		return NULL;
 	}
 
@@ -1700,16 +1928,31 @@ lws_esp32_init(struct lws_context_creation_info *info, struct lws_vhost **pvh)
 
 	lws_set_fops(context, &fops);
 
+	info->options |= LWS_SERVER_OPTION_CREATE_VHOST_SSL_CTX |
+			 LWS_SERVER_OPTION_IGNORE_MISSING_CERT;
+
 	vhost = lws_create_vhost(context, info);
-	if (!vhost)
+	if (!vhost) {
 		lwsl_err("Failed to create vhost\n");
-	else
-		lws_init_vhost_client_ssl(info, vhost); 
+		return NULL;
+	}
+
+	lws_esp32_update_acme_info();
+
+	lws_esp32_selfsigned(vhost);
+	wsi.context = vhost->context;
+	wsi.vhost = vhost;
+
+	lws_tls_server_certs_load(vhost, &wsi, info->ssl_cert_filepath,
+			info->ssl_private_key_filepath, NULL, 0, NULL, 0);
+
+	lws_init_vhost_client_ssl(info, vhost);
 
 	if (pvh)
 		*pvh = vhost;
 
-	lws_protocol_init(context);
+	if (lws_protocol_init(context))
+		return NULL;
 
 	return context;
 }
@@ -1755,3 +1998,83 @@ uint16_t lws_esp32_sine_interp(int n)
                 sine_lu((n >> 4) + 1) * (n & 15)) / 15;
 }
 
+LWS_VISIBLE int
+lws_plat_write_file(const char *filename, void *buf, int len)
+{
+	nvs_handle nvh;
+	int n;
+
+	if (nvs_open("lws-station", NVS_READWRITE, &nvh)) {
+		lwsl_notice("%s: failed to open nvs\n", __func__);
+		return -1;
+	}
+
+	n = nvs_set_blob(nvh, filename, buf, len);
+	if (n >= 0)
+		nvs_commit(nvh);
+
+	nvs_close(nvh);
+
+	lwsl_notice("%s: wrote %s (%d)\n", __func__, filename, n);
+
+	return n;
+}
+
+/* we write vhostname.cert.pem and vhostname.key.pem, 0 return means OK */
+
+LWS_VISIBLE int
+lws_plat_write_cert(struct lws_vhost *vhost, int is_key, int fd, void *buf,
+			int len)
+{
+	const char *name = vhost->alloc_cert_path;
+
+	if (is_key)
+		name = vhost->key_path;
+
+	return lws_plat_write_file(name, buf, len) < 0;
+}
+
+LWS_VISIBLE int
+lws_plat_read_file(const char *filename, void *buf, int len)
+{
+	nvs_handle nvh;
+	size_t s = 0;
+	int n = 0;
+
+	if (nvs_open("lws-station", NVS_READWRITE, &nvh)) {
+		lwsl_notice("%s: failed to open nvs\n", __func__);
+		return 1;
+	}
+
+	ESP_ERROR_CHECK(nvs_open("lws-station", NVS_READWRITE, &nvh));
+	if (nvs_get_blob(nvh, filename, NULL, &s) != ESP_OK)
+		goto bail;
+	if (s > (size_t)len)
+		goto bail;
+
+	n = nvs_get_blob(nvh, filename, buf, &s);
+
+	nvs_close(nvh);
+
+	lwsl_notice("%s: read %s (%d)\n", __func__, filename, (int)s);
+
+	if (n)
+		return -1;
+
+	return (int)s;
+
+bail:
+	nvs_close(nvh);
+
+	return -1;
+}
+
+LWS_VISIBLE int
+lws_plat_recommended_rsa_bits(void)
+{
+	/*
+	 * 2048-bit key generation takes up to a minute on ESP32, 4096
+	 * is like 15 minutes +
+	 */
+	return 2048;
+}

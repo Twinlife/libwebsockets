@@ -20,7 +20,6 @@
  */
 
 #include "private-libwebsockets.h"
-#include "../misc/lejp.h"
 
 #ifndef _WIN32
 /* this is needed for Travis CI */
@@ -100,6 +99,8 @@ static const char * const paths_vhosts[] = {
 	"vhosts[].client-ssl-ca",
 	"vhosts[].client-ssl-ciphers",
 	"vhosts[].onlyraw",
+	"vhosts[].client-cert-required",
+	"vhosts[].ignore-missing-cert",
 };
 
 enum lejp_vhost_paths {
@@ -147,6 +148,8 @@ enum lejp_vhost_paths {
 	LEJPVP_CLIENT_SSL_CA,
 	LEJPVP_CLIENT_CIPHERS,
 	LEJPVP_FLAG_ONLYRAW,
+	LEJPVP_FLAG_CLIENT_CERT_REQUIRED,
+	LEJPVP_IGNORE_MISSING_CERT,
 };
 
 static const char * const parser_errs[] = {
@@ -216,7 +219,7 @@ arg_to_bool(const char *s)
 	if (n)
 		return 1;
 
-	for (n = 0; n < ARRAY_SIZE(on); n++)
+	for (n = 0; n < (int)ARRAY_SIZE(on); n++)
 		if (!strcasecmp(s, on[n]))
 			return 1;
 
@@ -323,6 +326,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 		a->info->ssl_cert_filepath = NULL;
 		a->info->ssl_private_key_filepath = NULL;
 		a->info->ssl_ca_filepath = NULL;
+#ifdef LWS_OPENSSL_SUPPORT
 		a->info->client_ssl_cert_filepath = NULL;
 		a->info->client_ssl_private_key_filepath = NULL;
 		a->info->client_ssl_ca_filepath = NULL;
@@ -339,6 +343,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 			"!DHE-RSA-AES256-SHA256:"
 			"!AES256-GCM-SHA384:"
 			"!AES256-SHA256";
+#endif
 		a->info->timeout_secs = 5;
 		a->info->ssl_cipher_list = "ECDHE-ECDSA-AES256-GCM-SHA384:"
 				       "ECDHE-RSA-AES256-GCM-SHA384:"
@@ -379,7 +384,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 		a->pvo->next = a->info->pvo;
 		a->info->pvo = a->pvo;
 		a->pvo->name = a->p;
-		lwsl_notice("  adding protocol %s\n", a->p);
+		lwsl_info("  adding protocol %s\n", a->p);
 		a->p += n;
 		a->pvo->value = a->p;
 		a->pvo->options = NULL;
@@ -431,6 +436,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 		}
 		a->any_vhosts = 1;
 
+#ifdef LWS_OPENSSL_SUPPORT
 		if (a->enable_client_ssl) {
 			const char *cert_filepath = a->info->client_ssl_cert_filepath;
 			const char *private_key_filepath = a->info->client_ssl_private_key_filepath;
@@ -444,6 +450,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 			a->info->options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 			lws_init_vhost_client_ssl(a->info, vhost);
 		}
+#endif
 
 		return 0;
 	}
@@ -474,7 +481,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 		if (a->last)
 			a->last->mount_next = m;
 
-		for (n = 0; n < ARRAY_SIZE(mount_protocols); n++)
+		for (n = 0; n < (int)ARRAY_SIZE(mount_protocols); n++)
 			if (!strncmp(a->m.origin, mount_protocols[n],
 			     strlen(mount_protocols[n]))) {
 				lwsl_info("----%s\n", a->m.origin);
@@ -484,7 +491,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 				break;
 			}
 
-		if (n == ARRAY_SIZE(mount_protocols)) {
+		if (n == (int)ARRAY_SIZE(mount_protocols)) {
 			lwsl_err("unsupported protocol:// %s\n", a->m.origin);
 			return 1;
 		}
@@ -573,9 +580,11 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 	case LEJPVP_KEEPALIVE_TIMEOUT:
 		a->info->keepalive_timeout = atoi(ctx->buf);
 		return 0;
+#ifdef LWS_OPENSSL_SUPPORT
 	case LEJPVP_CLIENT_CIPHERS:
 		a->info->client_ssl_cipher_list = a->p;
 		break;
+#endif
 	case LEJPVP_CIPHERS:
 		a->info->ssl_cipher_list = a->p;
 		break;
@@ -651,6 +660,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 	case LEJPVP_ENABLE_CLIENT_SSL:
 		a->enable_client_ssl = arg_to_bool(ctx->buf);
 		return 0;
+#ifdef LWS_OPENSSL_SUPPORT
 	case LEJPVP_CLIENT_SSL_KEY:
 		a->info->client_ssl_private_key_filepath = a->p;
 		break;
@@ -660,6 +670,7 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 	case LEJPVP_CLIENT_SSL_CA:
 		a->info->client_ssl_ca_filepath = a->p;
 		break;
+#endif
 
 	case LEJPVP_NOIPV6:
 		if (arg_to_bool(ctx->buf))
@@ -681,6 +692,20 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 			a->info->options |= LWS_SERVER_OPTION_IPV6_V6ONLY_VALUE;
 		else
 			a->info->options &= ~(LWS_SERVER_OPTION_IPV6_V6ONLY_VALUE);
+		return 0;
+
+	case LEJPVP_FLAG_CLIENT_CERT_REQUIRED:
+		if (arg_to_bool(ctx->buf))
+			a->info->options |=
+			    LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT;
+		return 0;
+
+	case LEJPVP_IGNORE_MISSING_CERT:
+		if (arg_to_bool(ctx->buf))
+			a->info->options |= LWS_SERVER_OPTION_IGNORE_MISSING_CERT;
+		else
+			a->info->options &= ~(LWS_SERVER_OPTION_IGNORE_MISSING_CERT);
+
 		return 0;
 
 	case LEJPVP_SSL_OPTION_SET:

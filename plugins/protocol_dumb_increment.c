@@ -26,11 +26,7 @@
 
 #include <string.h>
 
-#if defined(LWS_WITH_ESP8266)
 #define DUMB_PERIOD 50
-#else
-#define DUMB_PERIOD 50
-#endif
 
 struct per_vhost_data__dumb_increment {
 	uv_timer_t timeout_watcher;
@@ -95,6 +91,8 @@ callback_dumb_increment(struct lws *wsi, enum lws_callback_reasons reason,
 
 	case LWS_CALLBACK_ESTABLISHED:
 		pss->number = 0;
+		/* just to test the timer api */
+		// lws_set_timer(wsi, 3);
 		break;
 
 	case LWS_CALLBACK_SERVER_WRITEABLE:
@@ -117,6 +115,11 @@ callback_dumb_increment(struct lws *wsi, enum lws_callback_reasons reason,
 					 (unsigned char *)"seeya", 5);
 			return -1;
 		}
+		break;
+
+	case LWS_CALLBACK_TIMER:
+		lwsl_notice("%s: LWS_CALLBACK_TIMER\n", __func__);
+		lws_set_timer(wsi, 3);
 		break;
 
 	default:

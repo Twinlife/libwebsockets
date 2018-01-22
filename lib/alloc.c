@@ -51,10 +51,12 @@ void lws_set_allocator(void *(*cb)(void *ptr, size_t size, const char *reason))
 static void *_realloc(void *ptr, size_t size, const char *reason)
 {
 	if (size) {
-#if defined(LWS_PLAT_ESP32)
-		lwsl_notice("%s: size %lu: %s\n", __func__, (unsigned long)size, reason);
+#if defined(LWS_WITH_ESP32)
+		lwsl_notice("%s: size %lu: %s (free heap %d)\n", __func__,
+			    (unsigned long)size, reason, (unsigned int)esp_get_free_heap_size() - (int)size);
 #else
-		lwsl_debug("%s: size %lu: %s\n", __func__, (unsigned long)size, reason);
+		lwsl_debug("%s: size %lu: %s\n", __func__,
+			   (unsigned long)size, reason);
 #endif
 #if defined(LWS_PLAT_OPTEE)
 		return (void *)TEE_Realloc(ptr, size);

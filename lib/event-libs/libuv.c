@@ -215,7 +215,7 @@ lws_uv_initloop(struct lws_context *context, uv_loop_t *loop, int tsi)
 			ns = 2;
 
 		if (pt->context->use_ev_sigint) {
-			assert(ns <= ARRAY_SIZE(pt->signals));
+			assert(ns <= (int)ARRAY_SIZE(pt->signals));
 			for (n = 0; n < ns; n++) {
 				uv_signal_init(loop, &pt->signals[n]);
 				pt->signals[n].data = pt->context;
@@ -226,6 +226,9 @@ lws_uv_initloop(struct lws_context *context, uv_loop_t *loop, int tsi)
 		}
 	} else
 		first = 0;
+
+	if (lws_create_event_pipes(context))
+		goto bail;
 
 	/*
 	 * Initialize the accept wsi read watcher with all the listening sockets
@@ -247,6 +250,9 @@ lws_uv_initloop(struct lws_context *context, uv_loop_t *loop, int tsi)
 	}
 
 	return status;
+
+bail:
+	return -1;
 }
 
 static void lws_uv_close_cb(uv_handle_t *handle)
@@ -325,9 +331,9 @@ lws_libuv_accept(struct lws *wsi, lws_sock_file_fd_type desc)
 		return;
 
 	wsi->w_read.context = context;
-	if (wsi->mode == LWSCM_RAW_FILEDESC)
+	if (wsi->mode == LWSCM_RAW_FILEDESC || wsi->event_pipe)
 		uv_poll_init(pt->io_loop_uv, &wsi->w_read.uv_watcher,
-			     (int)desc.filefd);
+			     (int)(long long)desc.filefd);
 	else
 		uv_poll_init_socket(pt->io_loop_uv, &wsi->w_read.uv_watcher,
 				    desc.sockfd);

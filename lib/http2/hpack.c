@@ -202,7 +202,7 @@ static int huftable_decode(int pos, char c)
 
 static int lws_frag_start(struct lws *wsi, int hdr_token_idx)
 {
-	struct allocated_headers *ah = wsi->u.h2.http.ah;
+	struct allocated_headers *ah = wsi->ah;
 
 	if (!ah) {
 		lwsl_notice("%s: no ah\n", __func__);
@@ -227,6 +227,7 @@ static int lws_frag_start(struct lws *wsi, int hdr_token_idx)
 	if ((hdr_token_idx == WSI_TOKEN_HTTP_COLON_AUTHORITY ||
 	     hdr_token_idx == WSI_TOKEN_HTTP_COLON_METHOD ||
 	     hdr_token_idx == WSI_TOKEN_HTTP_COLON_PATH ||
+	     hdr_token_idx == WSI_TOKEN_COLON_PROTOCOL ||
 	     hdr_token_idx == WSI_TOKEN_HTTP_COLON_SCHEME) &&
 	     ah->frag_index[hdr_token_idx]) {
 		if (!(ah->frags[ah->frag_index[hdr_token_idx]].flags & 1)) {
@@ -274,12 +275,12 @@ static int lws_frag_start(struct lws *wsi, int hdr_token_idx)
 
 static int lws_frag_append(struct lws *wsi, unsigned char c)
 {
-	struct allocated_headers * ah = wsi->u.h2.http.ah;
+	struct allocated_headers *ah = wsi->ah;
 
 	ah->data[ah->pos++] = c;
 	ah->frags[ah->nfrag].len++;
 
-	return ah->pos >= wsi->context->max_http_header_data;
+	return (int)ah->pos >= wsi->context->max_http_header_data;
 }
 
 static int lws_frag_end(struct lws *wsi)
@@ -289,16 +290,16 @@ static int lws_frag_end(struct lws *wsi)
 		return 1;
 
 	/* don't account for the terminating NUL in the logical length */
-	wsi->u.h2.http.ah->frags[wsi->u.h2.http.ah->nfrag].len--;
+	wsi->ah->frags[wsi->ah->nfrag].len--;
 
-	wsi->u.h2.http.ah->nfrag++;
+	wsi->ah->nfrag++;
 	return 0;
 }
 
 int
 lws_hdr_extant(struct lws *wsi, enum lws_token_indexes h)
 {
-	struct allocated_headers *ah = wsi->u.h2.http.ah;
+	struct allocated_headers *ah = wsi->ah;
 	int n;
 
 	if (!ah)
@@ -366,18 +367,18 @@ lws_token_from_index(struct lws *wsi, int index, const char **arg, int *len,
 
 	/* dynamic table only belongs to network wsi */
 	wsi = lws_get_network_wsi(wsi);
-	if (!wsi->u.h2.h2n)
+	if (!wsi->h2.h2n)
 		return -1;
 
-	dyn = &wsi->u.h2.h2n->hpack_dyn_table;
+	dyn = &wsi->h2.h2n->hpack_dyn_table;
 
 	if (index < 0)
 		return -1;
 
-	if (index < ARRAY_SIZE(static_token)) {
-		if (arg && index < ARRAY_SIZE(http2_canned)) {
+	if (index < (int)ARRAY_SIZE(static_token)) {
+		if (arg && index < (int)ARRAY_SIZE(http2_canned)) {
 			*arg = http2_canned[index];
-			*len = strlen(http2_canned[index]);
+			*len = (int)strlen(http2_canned[index]);
 		}
 		if (hdr_len)
 			*hdr_len = static_hdr_len[index];
@@ -390,8 +391,8 @@ lws_token_from_index(struct lws *wsi, int index, const char **arg, int *len,
 		return -1;
 	}
 
-	if (index < ARRAY_SIZE(static_token) ||
-	    index >= ARRAY_SIZE(static_token) + dyn->used_entries) {
+	if (index < (int)ARRAY_SIZE(static_token) ||
+	    index >= (int)ARRAY_SIZE(static_token) + dyn->used_entries) {
 		lwsl_err("  %s: adjusted index %d >= %d\n", __func__, index,
 			    dyn->used_entries);
 		lws_h2_goaway(wsi, H2_ERR_COMPRESSION_ERROR,
@@ -399,7 +400,7 @@ lws_token_from_index(struct lws *wsi, int index, const char **arg, int *len,
 		return -1;
 	}
 
-	index -= ARRAY_SIZE(static_token);
+	index -= (int)ARRAY_SIZE(static_token);
 	index = (dyn->pos - 1 - index) % dyn->num_entries;
 	if (index < 0)
 		index += dyn->num_entries;
@@ -427,9 +428,9 @@ lws_h2_dynamic_table_dump(struct lws *wsi)
 	int n, m;
 	const char *p;
 
-	if (!nwsi->u.h2.h2n)
+	if (!nwsi->h2.h2n)
 		return 1;
-	dyn = &nwsi->u.h2.h2n->hpack_dyn_table;
+	dyn = &nwsi->h2.h2n->hpack_dyn_table;
 
 	lwsl_header("Dump dyn table for nwsi %p (%d / %d members, pos = %d, "
 		    "start index %d, virt used %d / %d)\n", nwsi,
@@ -492,9 +493,9 @@ lws_dynamic_token_insert(struct lws *wsi, int hdr_len,
 
 	/* dynamic table only belongs to network wsi */
 	wsi = lws_get_network_wsi(wsi);
-	if (!wsi->u.h2.h2n)
+	if (!wsi->h2.h2n)
 		return 1;
-	dyn = &wsi->u.h2.h2n->hpack_dyn_table;
+	dyn = &wsi->h2.h2n->hpack_dyn_table;
 
 	if (!dyn->entries) {
 		lwsl_err("%s: unsized dyn table\n", __func__);
@@ -587,18 +588,23 @@ lws_hpack_dynamic_size(struct lws *wsi, int size)
 	 */
 
 	nwsi = lws_get_network_wsi(wsi);
-	if (!nwsi->u.h2.h2n)
+	if (!nwsi->h2.h2n)
 		goto bail;
 
-	dyn = &nwsi->u.h2.h2n->hpack_dyn_table;
+	dyn = &nwsi->h2.h2n->hpack_dyn_table;
 	lwsl_info("%s: from %d to %d, lim %d\n", __func__,
 		  (int)dyn->num_entries, size,
-		  nwsi->u.h2.h2n->set.s[H2SET_HEADER_TABLE_SIZE]);
+		  nwsi->vhost->set.s[H2SET_HEADER_TABLE_SIZE]);
 
-	if (size > nwsi->u.h2.h2n->set.s[H2SET_HEADER_TABLE_SIZE]) {
-		lws_h2_goaway(nwsi, H2_ERR_COMPRESSION_ERROR,
-			"Asked for header table bigger than we told");
-		goto bail;
+	if (size > (int)nwsi->vhost->set.s[H2SET_HEADER_TABLE_SIZE]) {
+		lwsl_notice("rejecting hpack dyn size %u\n", size);
+//#if defined(LWS_WITH_ESP32)
+		size = nwsi->vhost->set.s[H2SET_HEADER_TABLE_SIZE];
+//#else
+//		lws_h2_goaway(nwsi, H2_ERR_COMPRESSION_ERROR,
+//			"Asked for header table bigger than we told");
+//		goto bail;
+//#endif
 	}
 
 	dyn->virtual_payload_max = size;
@@ -613,6 +619,8 @@ lws_hpack_dynamic_size(struct lws *wsi, int size)
 
 	if (dyn->num_entries < min)
 		min = dyn->num_entries;
+
+	// lwsl_notice("dte requested size %d\n", size);
 
 	dte = lws_zalloc(sizeof(*dte) * (size + 1), "dynamic table entries");
 	if (!dte)
@@ -664,10 +672,10 @@ lws_hpack_destroy_dynamic_header(struct lws *wsi)
 	struct hpack_dynamic_table *dyn;
 	int n;
 
-	if (!wsi->u.h2.h2n)
+	if (!wsi->h2.h2n)
 		return;
 
-	dyn = &wsi->u.h2.h2n->hpack_dyn_table;
+	dyn = &wsi->h2.h2n->hpack_dyn_table;
 
 	if (!dyn->entries)
 		return;
@@ -713,7 +721,7 @@ lws_hpack_use_idx_hdr(struct lws *wsi, int idx, int known_token)
 	if (arg)
 		p = arg;
 
-	if (idx < ARRAY_SIZE(http2_canned))
+	if (idx < (int)ARRAY_SIZE(http2_canned))
 		p = http2_canned[idx];
 
 	if (lws_frag_start(wsi, tok))
@@ -767,8 +775,8 @@ lws_hpack_handle_pseudo_rules(struct lws *nwsi, struct lws *wsi, int m)
 int lws_hpack_interpret(struct lws *wsi, unsigned char c)
 {
 	struct lws *nwsi = lws_get_network_wsi(wsi);
-	struct lws_h2_netconn *h2n = nwsi->u.h2.h2n;
-	struct allocated_headers *ah = wsi->u.h2.http.ah;
+	struct lws_h2_netconn *h2n = nwsi->h2.h2n;
+	struct allocated_headers *ah = wsi->ah;
 	unsigned int prev;
 	unsigned char c1;
 	int n, m;
@@ -795,7 +803,7 @@ int lws_hpack_interpret(struct lws *wsi, unsigned char c)
 		h2n->ext_count = 0;
 		h2n->hpack_hdr_len = 0;
 		h2n->unknown_header = 0;
-		wsi->u.hdr.parser_state = 255;
+		ah->parser_state = 255;
 
 		if (c & 0x80) { /* 1....  indexed header field only */
 			/* just a possibly-extended integer */
@@ -983,8 +991,8 @@ int lws_hpack_interpret(struct lws *wsi, unsigned char c)
 pre_data:
 		h2n->hpack = HPKS_DATA;
 		if (!h2n->value || !h2n->hdr_idx) {
-			wsi->u.hdr.parser_state = WSI_TOKEN_NAME_PART;
-			wsi->u.hdr.lextable_pos = 0;
+			ah->parser_state = WSI_TOKEN_NAME_PART;
+			ah->lextable_pos = 0;
 			h2n->unknown_header = 0;
 			break;
 		}
@@ -992,7 +1000,7 @@ pre_data:
 		if (h2n->hpack_type == HPKT_LITERAL_HDR_VALUE ||
 		    h2n->hpack_type == HPKT_LITERAL_HDR_VALUE_INCR ||
 		    h2n->hpack_type == HPKT_LITERAL_HDR_VALUE_NEVER) {
-			n = wsi->u.hdr.parser_state;
+			n = ah->parser_state;
 			if (n == 255) {
 				n = -1;
 				h2n->hdr_idx = -1;
@@ -1111,7 +1119,7 @@ pre_data:
 				/*
 				 * Convert name using existing parser,
 			 	 * If h2n->unknown_header == 0, result is
-			 	 * in wsi->u.hdr.parser_state
+				 * in wsi->parser_state
 			 	 * using WSI_TOKEN_GET_URI.
 			 	 *
 			 	 * If unknown header h2n->unknown_header
@@ -1159,19 +1167,19 @@ swallow:
 		    h2n->hpack_type == HPKT_LITERAL_HDR_VALUE_INCR ||
 		    h2n->hpack_type == HPKT_LITERAL_HDR_VALUE_NEVER)) {
 			h2n->hdr_idx = LWS_HPACK_IGNORE_ENTRY;
-			lwsl_header("wsi->u.hdr.parser_state: %d\n",
-				    wsi->u.hdr.parser_state);
+			lwsl_header("wsi->parser_state: %d\n",
+					ah->parser_state);
 
-			if (wsi->u.hdr.parser_state == WSI_TOKEN_NAME_PART) {
+			if (ah->parser_state == WSI_TOKEN_NAME_PART) {
 				/* h2 headers come without the colon */
 				n = lws_parse(wsi, ':');
 				(void)n;
 			}
 
-			if (wsi->u.hdr.parser_state == WSI_TOKEN_NAME_PART ||
-			    wsi->u.hdr.parser_state == WSI_TOKEN_SKIPPING) {
+			if (ah->parser_state == WSI_TOKEN_NAME_PART ||
+			    ah->parser_state == WSI_TOKEN_SKIPPING) {
 				h2n->unknown_header = 1;
-				wsi->u.hdr.parser_state = -1;
+				ah->parser_state = -1;
 				wsi->seen_nonpseudoheader = 1;
 			}
 		}
@@ -1209,14 +1217,14 @@ swallow:
 			 * hdr is a new literal, so length is already in
 			 * h2n->hpack_hdr_len
 			 */
-			m = wsi->u.hdr.parser_state;
+			m = ah->parser_state;
 			if (h2n->unknown_header ||
-			    wsi->u.hdr.parser_state == WSI_TOKEN_NAME_PART ||
-			    wsi->u.hdr.parser_state == WSI_TOKEN_SKIPPING) {
+			    ah->parser_state == WSI_TOKEN_NAME_PART ||
+			    ah->parser_state == WSI_TOKEN_SKIPPING) {
 				if (h2n->first_hdr_char == ':') {
 					lwsl_info("HPKT_LITERAL_HDR_VALUE_INCR:"
 						  " end state %d unk hdr %d\n",
-						wsi->u.hdr.parser_state,
+						  ah->parser_state,
 						h2n->unknown_header);
 					/* unknown pseudoheaders are illegal */
 					lws_h2_goaway(nwsi,
@@ -1253,14 +1261,12 @@ add_it:
 			if (h2n->hpack_type == HPKT_LITERAL_HDR_VALUE ||
 			    h2n->hpack_type == HPKT_LITERAL_HDR_VALUE_INCR ||
 			    h2n->hpack_type == HPKT_LITERAL_HDR_VALUE_NEVER) {
-				m = wsi->u.hdr.parser_state;
+				m = ah->parser_state;
 				if (m == 255)
 					m = -1;
-			} else {
-				m = lws_token_from_index(wsi, h2n->hdr_idx, NULL, NULL,
-							 NULL);
-				lwsl_notice("token from index(%d) says %d\n", h2n->hdr_idx, m);
-			}
+			} else
+				m = lws_token_from_index(wsi, h2n->hdr_idx,
+							 NULL, NULL, NULL);
 		}
 
 		if (m != -1 && m != LWS_HPACK_IGNORE_ENTRY)
@@ -1282,7 +1288,7 @@ add_it:
 static int
 lws_h2_num_start(int starting_bits, unsigned long num)
 {
-	int mask = (1 << starting_bits) - 1;
+	unsigned int mask = (1 << starting_bits) - 1;
 
 	if (num < mask)
 		return (int)num;
@@ -1294,7 +1300,7 @@ static int
 lws_h2_num(int starting_bits, unsigned long num,
 			 unsigned char **p, unsigned char *end)
 {
-	int mask = (1 << starting_bits) - 1;
+	unsigned int mask = (1 << starting_bits) - 1;
 
 	if (num < mask)
 		return 0;
@@ -1321,7 +1327,7 @@ int lws_add_http2_header_by_name(struct lws *wsi, const unsigned char *name,
 
 	lwsl_header("%s: %p  %s:%s\n", __func__, *p, name, value);
 
-	len = strlen((char *)name);
+	len = (int)strlen((char *)name);
 	if (len)
 		if (name[len - 1] == ':')
 			len--;
@@ -1375,7 +1381,7 @@ int lws_add_http2_header_status(struct lws *wsi, unsigned int code,
 	unsigned char status[10];
 	int n;
 
-	wsi->u.h2.send_END_STREAM = 0; // !!(code >= 400);
+	wsi->h2.send_END_STREAM = 0; // !!(code >= 400);
 
 	n = sprintf((char *)status, "%u", code);
 	if (lws_add_http2_header_by_token(wsi, WSI_TOKEN_HTTP_COLON_STATUS,

@@ -101,7 +101,6 @@ lws_create_basic_wsi(struct lws_context *context, int tsi)
 	 */
 	new_wsi->protocol = context->vhost_list->protocols;
 	new_wsi->user_space = NULL;
-	new_wsi->ietf_spec_revision = 0;
 	new_wsi->desc.sockfd = LWS_SOCK_INVALID;
 	context->count_wsi_allocated++;
 
@@ -114,7 +113,7 @@ lws_cgi(struct lws *wsi, const char * const *exec_array, int script_uri_path_len
 {
 	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
 	char *env_array[30], cgi_path[400], e[1024], *p = e,
-	     *end = p + sizeof(e) - 1, tok[256], *t;
+	     *end = p + sizeof(e) - 1, tok[256], *t, *sum, *sumend;
 	struct lws_cgi *cgi;
 	int n, m = 0, i, uritok = -1;
 
@@ -132,6 +131,8 @@ lws_cgi(struct lws *wsi, const char * const *exec_array, int script_uri_path_len
 
 	cgi = wsi->cgi;
 	cgi->wsi = wsi; /* set cgi's owning wsi */
+	sum = cgi->summary;
+	sumend = sum + strlen(cgi->summary) - 1;
 
 	/* create pipes for [stdin|stdout] and [stderr] */
 
@@ -190,13 +191,15 @@ lws_cgi(struct lws *wsi, const char * const *exec_array, int script_uri_path_len
 	cgi->cgi_list = pt->cgi_list;
 	pt->cgi_list = cgi;
 
+	sum += lws_snprintf(sum, sumend - sum, "%s ", exec_array[0]);
+
 	/* prepare his CGI env */
 
 	n = 0;
 
 	if (lws_is_ssl(wsi))
 		env_array[n++] = "HTTPS=ON";
-	if (wsi->u.hdr.ah) {
+	if (wsi->ah) {
 		static const unsigned char meths[] = {
 			WSI_TOKEN_GET_URI,
 			WSI_TOKEN_POST_URI,
@@ -216,7 +219,7 @@ lws_cgi(struct lws *wsi, const char * const *exec_array, int script_uri_path_len
 		};
 
 		if (script_uri_path_len >= 0)
-			for (m = 0; m < ARRAY_SIZE(meths); m++)
+			for (m = 0; m < (int)ARRAY_SIZE(meths); m++)
 				if (lws_hdr_total_length(wsi, meths[m]) >=
 						script_uri_path_len) {
 					uritok = meths[m];
@@ -238,16 +241,24 @@ lws_cgi(struct lws *wsi, const char * const *exec_array, int script_uri_path_len
 
 		if (m >= 0) {
 			env_array[n++] = p;
-			if (m < 8)
+			if (m < 8) {
 				p += lws_snprintf(p, end - p,
 						  "REQUEST_METHOD=%s",
 						  meth_names[m]);
-			else
+				sum += lws_snprintf(sum, sumend - sum, "%s ", meth_names[m]);
+			} else {
 				p += lws_snprintf(p, end - p,
 						  "REQUEST_METHOD=%s",
 			  lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COLON_METHOD));
+				sum += lws_snprintf(sum, sumend - sum, "%s ",
+					lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COLON_METHOD));
+			}
 			p++;
 		}
+
+		if (uritok >= 0)
+			sum += lws_snprintf(sum, sumend - sum, "%s ",
+					lws_hdr_simple_ptr(wsi, uritok));
 
 		env_array[n++] = p;
 		p += lws_snprintf(p, end - p, "QUERY_STRING=");
@@ -273,6 +284,8 @@ lws_cgi(struct lws *wsi, const char * const *exec_array, int script_uri_path_len
 		if (m)
 			p--;
 		*p++ = '\0';
+
+		sum += lws_snprintf(sum, sumend - sum, "%s", env_array[n - 1]);
 
 		if (script_uri_path_len >= 0) {
 			env_array[n++] = p;
@@ -705,7 +718,7 @@ post_hpack_recode:
 				 */
 				if (!significant_hdr[n][wsi->cgi->match[n]] &&
 				    (c >= '0' && c <= '9') &&
-				    wsi->cgi->lp < sizeof(wsi->cgi->l) - 1) {
+				    wsi->cgi->lp < (int)sizeof(wsi->cgi->l) - 1) {
 					wsi->cgi->l[wsi->cgi->lp++] = c;
 					wsi->cgi->l[wsi->cgi->lp] = '\0';
 					switch (n) {

@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010-2016 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010-2017 Andy Green <andy@warmcat.com>
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -39,12 +39,7 @@ extern "C" {
  * CARE: everything using cmake defines needs to be below here
  */
 
-#if defined(LWS_WITH_ESP8266)
-struct sockaddr_in;
-#define LWS_POSIX 0
-#else
 #define LWS_POSIX 1
-#endif
 
 #if defined(LWS_HAS_INTPTR_T)
 #include <stdint.h>
@@ -62,6 +57,7 @@ typedef unsigned long long lws_intptr_t;
 #include <ws2tcpip.h>
 #include <stddef.h>
 #include <basetsd.h>
+#include <io.h>
 #ifndef _WIN32_WCE
 #include <fcntl.h>
 #else
@@ -117,7 +113,7 @@ typedef unsigned long long lws_intptr_t;
 #include <sys/capability.h>
 #endif
 
-#if defined(__NetBSD__) || defined(__FreeBSD__)
+#if defined(__NetBSD__) || defined(__FreeBSD__) || defined(__QNX__)
 #include <netinet/in.h>
 #endif
 
@@ -127,7 +123,7 @@ typedef unsigned long long lws_intptr_t;
 #define LWS_O_CREAT O_CREAT
 #define LWS_O_TRUNC O_TRUNC
 
-#if !defined(LWS_WITH_ESP8266) && !defined(OPTEE_TA) && !defined(LWS_WITH_ESP32)
+#if !defined(LWS_PLAT_OPTEE) && !defined(OPTEE_TA) && !defined(LWS_WITH_ESP32)
 #include <poll.h>
 #include <netdb.h>
 #define LWS_INVALID_FILE -1
@@ -210,10 +206,11 @@ typedef unsigned long long lws_intptr_t;
 #define MBEDTLS_CONFIG_FILE <mbedtls/esp_config.h>
 #endif
 #include <mbedtls/ssl.h>
-#endif
+#else
 #include <openssl/ssl.h>
 #if !defined(LWS_WITH_MBEDTLS)
 #include <openssl/err.h>
+#endif
 #endif
 #endif /* not USE_WOLFSSL */
 #endif
@@ -279,10 +276,6 @@ lwsl_timestamp(int level, char *p, int len);
  *  that gets rid of the overhead of checking while keeping _warn and _err
  *  active
  */
-
-#if defined(LWS_WITH_ESP8266)
-#undef _DEBUG
-#endif
 
 #ifdef _DEBUG
 #if defined(LWS_WITH_NO_LOGS)
@@ -434,72 +427,6 @@ struct lws_pollfd {
 #else
 
 
-#if defined(LWS_WITH_ESP8266)
-
-#include <user_interface.h>
-#include <espconn.h>
-
-typedef struct espconn * lws_sockfd_type;
-typedef void * lws_filefd_type;
-#define lws_sockfd_valid(sfd) (!!sfd)
-struct pollfd {
-	lws_sockfd_type fd; /**< fd related to */
-	short events; /**< which POLL... events to respond to */
-	short revents; /**< which POLL... events occurred */
-};
-#define POLLIN		0x0001
-#define POLLPRI		0x0002
-#define POLLOUT		0x0004
-#define POLLERR		0x0008
-#define POLLHUP		0x0010
-#define POLLNVAL	0x0020
-
-struct lws_vhost;
-
-lws_sockfd_type esp8266_create_tcp_listen_socket(struct lws_vhost *vh);
-void esp8266_tcp_stream_accept(lws_sockfd_type fd, struct lws *wsi);
-
-#include <os_type.h>
-#include <osapi.h>
-#include "ets_sys.h"
-
-int ets_snprintf(char *str, size_t size, const char *format, ...) LWS_FORMAT(3);
-#define snprintf  ets_snprintf
-
-typedef os_timer_t uv_timer_t;
-typedef void uv_cb_t(uv_timer_t *);
-
-void os_timer_disarm(void *);
-void os_timer_setfn(os_timer_t *, os_timer_func_t *, void *);
-
-void ets_timer_arm_new(os_timer_t *, int, int, int);
-
-//void os_timer_arm(os_timer_t *, int, int);
-
-#define UV_VERSION_MAJOR 1
-
-#define lws_uv_getloop(a, b) (NULL)
-
-static inline void uv_timer_init(void *l, uv_timer_t *t)
-{
-	(void)l;
-	memset(t, 0, sizeof(*t));
-	os_timer_disarm(t);
-}
-
-static inline void uv_timer_start(uv_timer_t *t, uv_cb_t *cb, int first, int rep)
-{
-	os_timer_setfn(t, (os_timer_func_t *)cb, t);
-	/* ms, repeat */
-	os_timer_arm(t, first, !!rep);
-}
-
-static inline void uv_timer_stop(uv_timer_t *t)
-{
-	os_timer_disarm(t);
-}
-
-#else
 #if defined(LWS_WITH_ESP32)
 
 typedef int lws_sockfd_type;
@@ -644,6 +571,8 @@ struct lws_esp32 {
 	char access_pw[16];
 	char hostname[32];
 	char mac[20];
+	char le_dns[64];
+	char le_email[64];
 	mdns_server_t *mdns;
        	char region;
        	char inet;
@@ -656,6 +585,10 @@ struct lws_esp32 {
 	void *scan_consumer_arg;
 	struct lws_group_member *first;
 	int extant_group_members;
+
+	char acme;
+
+	volatile char button_is_down;
 };
 
 struct lws_esp32_image {
@@ -703,7 +636,6 @@ extern void lws_esp32_leds_timer_cb(TimerHandle_t th);
 typedef int lws_sockfd_type;
 typedef int lws_filefd_type;
 #define lws_sockfd_valid(sfd) (sfd >= 0)
-#endif
 #endif
 
 #define lws_pollfd pollfd
@@ -908,6 +840,45 @@ struct lws_ssl_info {
 	int ret;
 };
 
+enum lws_cert_update_state {
+	LWS_CUS_IDLE,
+	LWS_CUS_STARTING,
+	LWS_CUS_SUCCESS,
+	LWS_CUS_FAILED,
+
+	LWS_CUS_CREATE_KEYS,
+	LWS_CUS_REG,
+	LWS_CUS_AUTH,
+	LWS_CUS_CHALLENGE,
+	LWS_CUS_CREATE_REQ,
+	LWS_CUS_REQ,
+	LWS_CUS_CONFIRM,
+	LWS_CUS_ISSUE,
+};
+
+enum {
+	LWS_TLS_REQ_ELEMENT_COUNTRY,
+	LWS_TLS_REQ_ELEMENT_STATE,
+	LWS_TLS_REQ_ELEMENT_LOCALITY,
+	LWS_TLS_REQ_ELEMENT_ORGANIZATION,
+	LWS_TLS_REQ_ELEMENT_COMMON_NAME,
+	LWS_TLS_REQ_ELEMENT_EMAIL,
+
+	LWS_TLS_REQ_ELEMENT_COUNT,
+
+	LWS_TLS_SET_DIR_URL = LWS_TLS_REQ_ELEMENT_COUNT,
+	LWS_TLS_SET_AUTH_PATH,
+	LWS_TLS_SET_CERT_PATH,
+	LWS_TLS_SET_KEY_PATH,
+
+	LWS_TLS_TOTAL_COUNT
+};
+
+struct lws_acme_cert_aging_args {
+	struct lws_vhost *vh;
+	const char *element_overrides[LWS_TLS_TOTAL_COUNT]; /* NULL = use pvo */
+};
+
 /*
  * NOTE: These public enums are part of the abi.  If you want to add one,
  * add it at where specified so existing users are unaffected.
@@ -1075,7 +1046,7 @@ enum lws_callback_reasons {
 	 * including OpenSSL support, this callback allows your user code
 	 * to load extra certificates into the server which allow it to
 	 * verify the validity of certificates returned by clients.  user
-	 * is the server's OpenSSL SSL_CTX* */
+	 * is the server's OpenSSL SSL_CTX* and in is the lws_vhost * */
 	LWS_CALLBACK_OPENSSL_PERFORM_CLIENT_CERT_VERIFICATION	= 23,
 	/**< if the libwebsockets vhost was created with the option
 	 * LWS_SERVER_OPTION_REQUIRE_VALID_OPENSSL_CLIENT_CERT, then this
@@ -1117,7 +1088,11 @@ enum lws_callback_reasons {
 	 * optional, if you don't handle it everything is fine.
 	 *
 	 * Notice the callback is coming to protocols[0] all the time,
-	 * because there is no specific protocol negotiated yet. */
+	 * because there is no specific protocol negotiated yet.
+	 *
+	 * See LWS_CALLBACK_ADD_HEADERS for adding headers to server
+	 * transactions.
+	 */
 	LWS_CALLBACK_CONFIRM_EXTENSION_OKAY			= 25,
 	/**< When the server handshake code
 	 * sees that it does support a requested extension, before
@@ -1304,10 +1279,13 @@ enum lws_callback_reasons {
 	 * bytes per buffer).
 	 *  */
 	LWS_CALLBACK_ADD_HEADERS				= 53,
-	/**< This gives your user code a chance to add headers to a
+	/**< This gives your user code a chance to add headers to a server
 	 * transaction bound to your protocol.  `in` points to a
 	 * `struct lws_process_html_args` describing a buffer and length
 	 * you can add headers into using the normal lws apis.
+	 *
+	 * (see LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER to add headers to
+	 * a client transaction)
 	 *
 	 * Only `args->p` and `args->len` are valid, and `args->p` should
 	 * be moved on by the amount of bytes written, if any.  Eg
@@ -1414,6 +1392,35 @@ enum lws_callback_reasons {
 	LWS_CALLBACK_CGI_PROCESS_ATTACH				= 70,
 	/**< CGI: Sent when the CGI process is spawned for the wsi.  The
 	 * len parameter is the PID of the child process */
+	LWS_CALLBACK_EVENT_WAIT_CANCELLED			= 71,
+	/**< This is sent to every protocol of every vhost in response
+	 * to lws_cancel_service() or lws_cancel_service_pt().  This
+	 * callback is serialized in the lws event loop normally, even
+	 * if the lws_cancel_service[_pt]() call was from a different
+	 * thread. */
+	LWS_CALLBACK_VHOST_CERT_AGING				= 72,
+	/**< When a vhost TLS cert has its expiry checked, this callback
+	 * is broadcast to every protocol of every vhost in case the
+	 * protocol wants to take some action with this information.
+	 * \p in is a pointer to a struct lws_acme_cert_aging_args,
+	 * and \p len is the number of days left before it expires, as
+	 * a (ssize_t).  In the struct lws_acme_cert_aging_args, vh
+	 * points to the vhost the cert aging information applies to,
+	 * and element_overrides[] is an optional way to update information
+	 * from the pvos... NULL in an index means use the information from
+	 * from the pvo for the cert renewal, non-NULL in the array index
+	 * means use that pointer instead for the index. */
+	LWS_CALLBACK_TIMER					= 73,
+	/**< When the time elapsed after a call to lws_set_timer(wsi, secs)
+	 * is up, the wsi will get one of these callbacks.  The deadline
+	 * can be continuously extended into the future by later calls
+	 * to lws_set_timer() before the deadline expires, or cancelled by
+	 * lws_set_timer(wsi, -1); */
+	LWS_CALLBACK_VHOST_CERT_UPDATE				= 74,
+	/**< When a vhost TLS cert is being updated, progress is
+	 * reported to the vhost in question here, including completion
+	 * and failure.  in points to optional JSON, and len represents the
+	 * connection state using enum lws_cert_update_state */
 
 	/****** add new things just above ---^ ******/
 
@@ -1448,6 +1455,8 @@ lws_callback_function(struct lws *wsi, enum lws_callback_reasons reason,
 #define LWS_CB_REASON_AUX_BF__CGI_HEADERS	8
 ///@}
 
+struct lws_vhost;
+
 /*! \defgroup generic hash
  * ## Generic Hash related functions
  *
@@ -1467,9 +1476,20 @@ lws_callback_function(struct lws *wsi, enum lws_callback_reasons reason,
 #include <mbedtls/sha512.h>
 #endif
 
-#define LWS_GENHASH_TYPE_SHA1		0
-#define LWS_GENHASH_TYPE_SHA256		1
-#define LWS_GENHASH_TYPE_SHA512		2
+enum lws_genhash_types {
+	LWS_GENHASH_TYPE_SHA1,
+	LWS_GENHASH_TYPE_SHA256,
+	LWS_GENHASH_TYPE_SHA384,
+	LWS_GENHASH_TYPE_SHA512,
+};
+
+enum lws_genhmac_types {
+	LWS_GENHMAC_TYPE_SHA256,
+	LWS_GENHMAC_TYPE_SHA384,
+	LWS_GENHMAC_TYPE_SHA512,
+};
+
+#define LWS_GENHASH_LARGEST 64
 
 struct lws_genhash_ctx {
         uint8_t type;
@@ -1477,11 +1497,23 @@ struct lws_genhash_ctx {
         union {
 		mbedtls_sha1_context sha1;
 		mbedtls_sha256_context sha256;
-		mbedtls_sha512_context sha512;
+		mbedtls_sha512_context sha512; /* 384 also uses this */
+		const mbedtls_md_info_t *hmac;
         } u;
 #else
         const EVP_MD *evp_type;
         EVP_MD_CTX *mdctx;
+#endif
+};
+
+struct lws_genhmac_ctx {
+        uint8_t type;
+#if defined(LWS_WITH_MBEDTLS)
+	const mbedtls_md_info_t *hmac;
+	mbedtls_md_context_t ctx;
+#else
+        const EVP_MD *evp_type;
+        EVP_MD_CTX *ctx;
 #endif
 };
 
@@ -1492,7 +1524,16 @@ struct lws_genhash_ctx {
  * Returns number of bytes in this type of hash
  */
 LWS_VISIBLE LWS_EXTERN size_t LWS_WARN_UNUSED_RESULT
-lws_genhash_size(int type);
+lws_genhash_size(enum lws_genhash_types type);
+
+/** lws_genhmac_size() - get hash size in bytes
+ *
+ * \param type:	one of LWS_GENHASH_TYPE_...
+ *
+ * Returns number of bytes in this type of hmac
+ */
+LWS_VISIBLE LWS_EXTERN size_t LWS_WARN_UNUSED_RESULT
+lws_genhmac_size(enum lws_genhmac_types type);
 
 /** lws_genhash_init() - prepare your struct lws_genhash_ctx for use
  *
@@ -1502,7 +1543,7 @@ lws_genhash_size(int type);
  * Initializes the hash context for the type you requested
  */
 LWS_VISIBLE LWS_EXTERN int LWS_WARN_UNUSED_RESULT
-lws_genhash_init(struct lws_genhash_ctx *ctx, int type);
+lws_genhash_init(struct lws_genhash_ctx *ctx, enum lws_genhash_types type);
 
 /** lws_genhash_update() - digest len bytes of the buffer starting at in
  *
@@ -1529,9 +1570,385 @@ lws_genhash_update(struct lws_genhash_ctx *ctx, const void *in, size_t len);
 LWS_VISIBLE LWS_EXTERN int
 lws_genhash_destroy(struct lws_genhash_ctx *ctx, void *result);
 
-#endif
+/** lws_genhmac_init() - prepare your struct lws_genhmac_ctx for use
+ *
+ * \param ctx: your struct lws_genhmac_ctx
+ * \param type:	one of LWS_GENHMAC_TYPE_...
+ * \param key: pointer to the start of the HMAC key
+ * \param key_len: length of the HMAC key
+ *
+ * Initializes the hash context for the type you requested
+ *
+ * If the return is nonzero, it failed and there is nothing needing to be
+ * destroyed.
+ */
+int
+lws_genhmac_init(struct lws_genhmac_ctx *ctx, enum lws_genhmac_types type,
+		const uint8_t *key, size_t key_len);
 
+/** lws_genhmac_update() - digest len bytes of the buffer starting at in
+ *
+ * \param ctx: your struct lws_genhmac_ctx
+ * \param in: start of the bytes to digest
+ * \param len: count of bytes to digest
+ *
+ * Updates the state of your hash context to reflect digesting len bytes from in
+ *
+ * If the return is nonzero, it failed and needs destroying.
+ */
+int
+lws_genhmac_update(struct lws_genhmac_ctx *ctx, const void *in, size_t len);
+
+/** lws_genhmac_destroy() - copy out the result digest and destroy the ctx
+ *
+ * \param ctx: your struct lws_genhmac_ctx
+ * \param result: NULL, or where to copy the result hash
+ *
+ * Finalizes the hash and copies out the digest.  Destroys any allocations such
+ * that ctx can safely go out of scope after calling this.
+ *
+ * NULL result is supported so that you can destroy the ctx cleanly on error
+ * conditions, where there is no valid result.
+ */
+int
+lws_genhmac_destroy(struct lws_genhmac_ctx *ctx, void *result);
 ///@}
+
+/*! \defgroup generic RSA
+ * ## Generic RSA related functions
+ *
+ * Lws provides generic RSA functions that abstract the ones
+ * provided by whatever OpenSSL library you are linking against.
+ *
+ * It lets you use the same code if you build against mbedtls or OpenSSL
+ * for example.
+ */
+///@{
+
+enum enum_jwk_tok {
+	JWK_KEY_E,
+	JWK_KEY_N,
+	JWK_KEY_D,
+	JWK_KEY_P,
+	JWK_KEY_Q,
+	JWK_KEY_DP,
+	JWK_KEY_DQ,
+	JWK_KEY_QI,
+	JWK_KTY, /* also serves as count of real elements */
+	JWK_KEY,
+};
+
+#define LWS_COUNT_RSA_ELEMENTS JWK_KTY
+
+struct lws_genrsa_ctx {
+#if defined(LWS_WITH_MBEDTLS)
+	mbedtls_rsa_context *ctx;
+#else
+	BIGNUM *bn[LWS_COUNT_RSA_ELEMENTS];
+	RSA *rsa;
+#endif
+};
+
+struct lws_genrsa_element {
+	uint8_t *buf;
+	uint16_t len;
+};
+
+struct lws_genrsa_elements {
+	struct lws_genrsa_element e[LWS_COUNT_RSA_ELEMENTS];
+};
+
+/** lws_jwk_destroy_genrsa_elements() - Free allocations in genrsa_elements
+ *
+ * \param el: your struct lws_genrsa_elements
+ *
+ * This is a helper for user code making use of struct lws_genrsa_elements
+ * where the elements are allocated on the heap, it frees any non-NULL
+ * buf element and sets the buf to NULL.
+ *
+ * NB: lws_genrsa_public_... apis do not need this as they take care of the key
+ * creation and destruction themselves.
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_jwk_destroy_genrsa_elements(struct lws_genrsa_elements *el);
+
+/** lws_genrsa_public_decrypt_create() - Create RSA public decrypt context
+ *
+ * \param ctx: your struct lws_genrsa_ctx
+ * \param el: struct prepared with key element data
+ *
+ * Creates an RSA context with a public key associated with it, formed from
+ * the key elements in \p el.
+ *
+ * Returns 0 for OK or nonzero for error.
+ *
+ * This and related APIs operate identically with OpenSSL or mbedTLS backends.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_genrsa_create(struct lws_genrsa_ctx *ctx, struct lws_genrsa_elements *el);
+
+/** lws_genrsa_new_keypair() - Create new RSA keypair
+ *
+ * \param context: your struct lws_context (may be used for RNG)
+ * \param ctx: your struct lws_genrsa_ctx
+ * \param el: struct to get the new key element data allocated into it
+ * \param bits: key size, eg, 4096
+ *
+ * Creates a new RSA context and generates a new keypair into it, with \p bits
+ * bits.
+ *
+ * Returns 0 for OK or nonzero for error.
+ *
+ * This and related APIs operate identically with OpenSSL or mbedTLS backends.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_genrsa_new_keypair(struct lws_context *context, struct lws_genrsa_ctx *ctx,
+		       struct lws_genrsa_elements *el, int bits);
+
+/** lws_genrsa_public_decrypt() - Perform RSA public decryption
+ *
+ * \param ctx: your struct lws_genrsa_ctx
+ * \param in: encrypted input
+ * \param in_len: length of encrypted input
+ * \param out: decrypted output
+ * \param out_max: size of output buffer
+ *
+ * Performs the decryption.
+ *
+ * Returns <0 for error, or length of decrypted data.
+ *
+ * This and related APIs operate identically with OpenSSL or mbedTLS backends.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_genrsa_public_decrypt(struct lws_genrsa_ctx *ctx, const uint8_t *in,
+			  size_t in_len, uint8_t *out, size_t out_max);
+
+/** lws_genrsa_public_verify() - Perform RSA public verification
+ *
+ * \param ctx: your struct lws_genrsa_ctx
+ * \param in: unencrypted payload (usually a recomputed hash)
+ * \param hash_type: one of LWS_GENHASH_TYPE_
+ * \param sig: pointer to the signature we received with the payload
+ * \param sig_len: length of the signature we are checking in bytes
+ *
+ * Returns <0 for error, or 0 if signature matches the payload + key.
+ *
+ * This and related APIs operate identically with OpenSSL or mbedTLS backends.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_genrsa_public_verify(struct lws_genrsa_ctx *ctx, const uint8_t *in,
+			 enum lws_genhash_types hash_type,
+			 const uint8_t *sig, size_t sig_len);
+
+/** lws_genrsa_public_sign() - Create RSA signature
+ *
+ * \param ctx: your struct lws_genrsa_ctx
+ * \param in: precomputed hash
+ * \param hash_type: one of LWS_GENHASH_TYPE_
+ * \param sig: pointer to buffer to take signature
+ * \param sig_len: length of the buffer (must be >= length of key N)
+ *
+ * Returns <0 for error, or 0 for success.
+ *
+ * This and related APIs operate identically with OpenSSL or mbedTLS backends.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_genrsa_public_sign(struct lws_genrsa_ctx *ctx, const uint8_t *in,
+			 enum lws_genhash_types hash_type, uint8_t *sig,
+			 size_t sig_len);
+
+/** lws_genrsa_public_decrypt_destroy() - Destroy RSA public decrypt context
+ *
+ * \param ctx: your struct lws_genrsa_ctx
+ *
+ * Destroys any allocations related to \p ctx.
+ *
+ * This and related APIs operate identically with OpenSSL or mbedTLS backends.
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_genrsa_destroy(struct lws_genrsa_ctx *ctx);
+
+/** lws_genrsa_render_pkey_asn1() - Exports public or private key to ASN1/DER
+ *
+ * \param ctx: your struct lws_genrsa_ctx
+ * \param _private: 0 = public part only, 1 = all parts of the key
+ * \param pkey_asn1: pointer to buffer to take the ASN1
+ * \param pkey_asn1_len: max size of the pkey_asn1_len
+ *
+ * Returns length of pkey_asn1 written, or -1 for error.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_genrsa_render_pkey_asn1(struct lws_genrsa_ctx *ctx, int _private,
+			    uint8_t *pkey_asn1, size_t pkey_asn1_len);
+///@}
+
+/*! \defgroup jwk JSON Web Keys
+ * ## JSON Web Keys API
+ *
+ * Lws provides an API to parse JSON Web Keys into a struct lws_genrsa_elements.
+ *
+ * "oct" and "RSA" type keys are supported.  For "oct" keys, they are held in
+ * the "e" member of the struct lws_genrsa_elements.
+ *
+ * Keys elements are allocated on the heap.  You must destroy the allocations
+ * in the struct lws_genrsa_elements by calling
+ * lws_jwk_destroy_genrsa_elements() when you are finished with it.
+ */
+///@{
+
+struct lws_jwk {
+	char keytype[5];		/**< "oct" or "RSA" */
+	struct lws_genrsa_elements el;	/**< OCTet key is in el.e */
+};
+
+/** lws_jwk_import() - Create a JSON Web key from the textual representation
+ *
+ * \param s: the JWK object to create
+ * \param in: a single JWK JSON stanza in utf-8
+ * \param len: the length of the JWK JSON stanza in bytes
+ *
+ * Creates an lws_jwk struct filled with data from the JSON representation.
+ * "oct" and "rsa" key types are supported.
+ *
+ * For "oct" type keys, it is loaded into el.e.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_jwk_import(struct lws_jwk *s, const char *in, size_t len);
+
+/** lws_jwk_destroy() - Destroy a JSON Web key
+ *
+ * \param s: the JWK object to destroy
+ *
+ * All allocations in the lws_jwk are destroyed
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_jwk_destroy(struct lws_jwk *s);
+
+/** lws_jwk_export() - Export a JSON Web key to a textual representation
+ *
+ * \param s: the JWK object to export
+ * \param _private: 0 = just export public parts, 1 = export everything
+ * \param p: the buffer to write the exported JWK to
+ * \param len: the length of the buffer \p p in bytes
+ *
+ * Returns length of the used part of the buffer if OK, or -1 for error.
+ *
+ * Serializes the content of the JWK into a char buffer.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_jwk_export(struct lws_jwk *s, int _private, char *p, size_t len);
+
+/** lws_jwk_load() - Import a JSON Web key from a file
+ *
+ * \param s: the JWK object to load into
+ * \param filename: filename to load from
+ *
+ * Returns 0 for OK or -1 for failure
+ */
+LWS_VISIBLE int
+lws_jwk_load(struct lws_jwk *s, const char *filename);
+
+/** lws_jwk_save() - Export a JSON Web key to a file
+ *
+ * \param s: the JWK object to save from
+ * \param filename: filename to save to
+ *
+ * Returns 0 for OK or -1 for failure
+ */
+LWS_VISIBLE int
+lws_jwk_save(struct lws_jwk *s, const char *filename);
+
+/** lws_jwk_rfc7638_fingerprint() - jwk to RFC7638 compliant fingerprint
+ *
+ * \param s: the JWK object to fingerprint
+ * \param digest32: buffer to take 32-byte digest
+ *
+ * Returns 0 for OK or -1 for failure
+ */
+LWS_VISIBLE int
+lws_jwk_rfc7638_fingerprint(struct lws_jwk *s, char *digest32);
+///@}
+
+
+/*! \defgroup jws JSON Web Signature
+ * ## JSON Web Signature API
+ *
+ * Lws provides an API to check and create RFC7515 JSON Web Signatures
+ *
+ * SHA256/384/512 HMAC, and RSA 256/384/512 are supported.
+ *
+ * The API uses your TLS library crypto, but works exactly the same no matter
+ * what you TLS backend is.
+ */
+///@{
+
+LWS_VISIBLE LWS_EXTERN int
+lws_jws_confirm_sig(const char *in, size_t len, struct lws_jwk *jwk);
+
+/**
+ * lws_jws_sign_from_b64() - add b64 sig to b64 hdr + payload
+ *
+ * \param b64_hdr: protected header encoded in b64, may be NULL
+ * \param hdr_len: bytes in b64 coding of protected header
+ * \param b64_pay: payload encoded in b64
+ * \param pay_len: bytes in b64 coding of payload
+ * \param b64_sig: buffer to write the b64 encoded signature into
+ * \param sig_len: max bytes we can write at b64_sig
+ * \param hash_type: one of LWS_GENHASH_TYPE_SHA[256|384|512]
+ * \param jwk: the struct lws_jwk containing the signing key
+ *
+ * This adds a b64-coded JWS signature of the b64-encoded protected header
+ * and b64-encoded payload, at \p b64_sig.  The signature will be as large
+ * as the N element of the RSA key when the RSA key is used, eg, 512 bytes for
+ * a 4096-bit key, and then b64-encoding on top.
+ *
+ * In some special cases, there is only payload to sign and no header, in that
+ * case \p b64_hdr may be NULL, and only the payload will be hashed before
+ * signing.
+ *
+ * Returns the length of the encoded signature written to \p b64_sig, or -1.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_jws_sign_from_b64(const char *b64_hdr, size_t hdr_len, const char *b64_pay,
+		      size_t pay_len, char *b64_sig, size_t sig_len,
+		      enum lws_genhash_types hash_type, struct lws_jwk *jwk);
+
+/**
+ * lws_jws_create_packet() - add b64 sig to b64 hdr + payload
+ *
+ * \param jwk: the struct lws_jwk containing the signing key
+ * \param payload: unencoded payload JSON
+ * \param len: length of unencoded payload JSON
+ * \param nonce: Nonse string to include in protected header
+ * \param out: buffer to take signed packet
+ * \param out_len: size of \p out buffer
+ *
+ * This creates a "flattened" JWS packet from the jwk and the plaintext
+ * payload, and signs it.  The packet is written into \p out.
+ *
+ * This does the whole packet assembly and signing, calling through to
+ * lws_jws_sign_from_b64() as part of the process.
+ *
+ * Returns the length written to \p out, or -1.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_jws_create_packet(struct lws_jwk *jwk, const char *payload, size_t len,
+		      const char *nonce, char *out, size_t out_len);
+
+/**
+ * lws_jws_base64_enc() - encode input data into b64url data
+ *
+ * \param in: the incoming plaintext
+ * \param in_len: the length of the incoming plaintext in bytes
+ * \param out: the buffer to store the b64url encoded data to
+ * \param out_max: the length of \p out in bytes
+ *
+ * Returns either -1 if problems, or the number of bytes written to \p out.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_jws_base64_enc(const char *in, size_t in_len, char *out, size_t out_max);
+///@}
+#endif
 
 /*! \defgroup extensions Extension related functions
  * ##Extension releated functions
@@ -1811,8 +2228,6 @@ struct lws_protocols {
 	 * This is part of the ABI, don't needlessly break compatibility */
 };
 
-struct lws_vhost;
-
 /**
  * lws_vhost_name_to_protocol() - get vhost's protocol object from its name
  *
@@ -2088,6 +2503,17 @@ enum lws_context_options {
 	 * LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS callback, which
 	 * provides the vhost SSL_CTX * in the user parameter.
 	 */
+	LWS_SERVER_OPTION_SKIP_PROTOCOL_INIT			= (1 << 25),
+	/**< (VH) You probably don't want this.  It forces this vhost to not
+	 * call LWS_CALLBACK_PROTOCOL_INIT on its protocols.  It's used in the
+	 * special case of a temporary vhost bound to a single protocol.
+	 */
+	LWS_SERVER_OPTION_IGNORE_MISSING_CERT			= (1 << 26),
+	/**< (VH) Don't fail if the vhost TLS cert or key are missing, just
+	 * continue.  The vhost won't be able to serve anything, but if for
+	 * example the ACME plugin was configured to fetch a cert, this lets
+	 * you bootstrap your vhost from having no cert to start with.
+	 */
 
 	/****** add new things just above ---^ ******/
 };
@@ -2191,12 +2617,12 @@ struct lws_context_creation_info {
 	int ka_interval;
 	/**< CONTEXT: if ka_time was nonzero, how long to wait before each ka_probes
 	 * attempt */
-#ifdef LWS_OPENSSL_SUPPORT
+#if defined(LWS_OPENSSL_SUPPORT) && !defined(LWS_WITH_MBEDTLS)
 	SSL_CTX *provided_client_ssl_ctx;
 	/**< CONTEXT: If non-null, swap out libwebsockets ssl
- *		implementation for the one provided by provided_ssl_ctx.
- *		Libwebsockets no longer is responsible for freeing the context
- *		if this option is selected. */
+	  * implementation for the one provided by provided_ssl_ctx.
+	  * Libwebsockets no longer is responsible for freeing the context
+	  * if this option is selected. */
 #else /* maintain structure layout either way */
 	void *provided_client_ssl_ctx; /**< dummy if ssl disabled */
 #endif
@@ -2596,6 +3022,38 @@ lws_vhost_get(struct lws *wsi) LWS_WARN_DEPRECATED;
  */
 LWS_VISIBLE LWS_EXTERN struct lws_vhost *
 lws_get_vhost(struct lws *wsi);
+
+/**
+ * lws_get_vhost_name() - returns the name of a vhost
+ *
+ * \param vhost: which vhost
+ */
+LWS_VISIBLE LWS_EXTERN const char *
+lws_get_vhost_name(struct lws_vhost *vhost);
+
+/**
+ * lws_get_vhost_port() - returns the port a vhost listens on, or -1
+ *
+ * \param vhost: which vhost
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_get_vhost_port(struct lws_vhost *vhost);
+
+/**
+ * lws_get_vhost_user() - returns the user pointer for the vhost
+ *
+ * \param vhost: which vhost
+ */
+LWS_VISIBLE LWS_EXTERN void *
+lws_get_vhost_user(struct lws_vhost *vhost);
+
+/**
+ * lws_get_vhost_iface() - returns the binding for the vhost listen socket
+ *
+ * \param vhost: which vhost
+ */
+LWS_VISIBLE LWS_EXTERN const char *
+lws_get_vhost_iface(struct lws_vhost *vhost);
 
 /**
  * lws_json_dump_vhost() - describe vhost state and stats in JSON
@@ -3030,15 +3488,8 @@ lws_service_tsi(struct lws_context *context, int timeout_ms, int tsi);
  *				on one thread
  * \param wsi:	Cancel service on the thread this wsi is serviced by
  *
- *	This function lets a call to lws_service() waiting for a timeout
- *	immediately return.
- *
- *	It works by creating a phony event and then swallowing it silently.
- *
- *	The reason it may be needed is when waiting in poll(), changes to
- *	the event masks are ignored by the OS until poll() is reentered.  This
- *	lets you halt the poll() wait and make the reentry happen immediately
- *	instead of having the wait out the rest of the poll timeout.
+ * Same as lws_cancel_service(), but targets a single service thread, the one
+ * the wsi belongs to.  You probably want to use lws_cancel_service() instead.
  */
 LWS_VISIBLE LWS_EXTERN void
 lws_cancel_service_pt(struct lws *wsi);
@@ -3047,12 +3498,13 @@ lws_cancel_service_pt(struct lws *wsi);
  * lws_cancel_service() - Cancel wait for new pending socket activity
  * \param context:	Websocket context
  *
- *	This function let a call to lws_service() waiting for a timeout
- *	immediately return.
+ * This function creates an immediate "synchronous interrupt" to the lws poll()
+ * wait or event loop.  As soon as possible in the serialzed service sequencing,
+ * a LWS_CALLBACK_EVENT_WAIT_CANCELLED callback is sent to every protocol on
+ * every vhost.
  *
- *	What it basically does is provide a fake event that will be swallowed,
- *	so the wait in poll() is ended.  That's useful because poll() doesn't
- *	attend to changes in POLLIN/OUT/ERR until it re-enters the wait.
+ * lws_cancel_service() may be called from another thread while the context
+ * exists, and its effect will be immediately serialized.
  */
 LWS_VISIBLE LWS_EXTERN void
 lws_cancel_service(struct lws_context *context);
@@ -3235,6 +3687,7 @@ struct lws_process_html_args {
 	int len; /**< length of the original data at p */
 	int max_len; /**< maximum length we can grow the data to */
 	int final; /**< set if this is the last chunk of the file */
+	int chunked; /**< 0 == unchunked, 1 == produce chunk headers (incompatible with HTTP/2) */
 };
 
 typedef const char *(*lws_process_html_state_cb)(void *data, int index);
@@ -3399,6 +3852,10 @@ enum lws_token_indexes {
 	WSI_TOKEN_CONNECT					= 81,
 	WSI_TOKEN_HEAD_URI					= 82,
 	WSI_TOKEN_TE						= 83,
+	WSI_TOKEN_REPLAY_NONCE					= 84,
+	WSI_TOKEN_COLON_PROTOCOL				= 85,
+	WSI_TOKEN_X_AUTH_TOKEN					= 86,
+
 	/****** add new things just above ---^ ******/
 
 	/* use token storage to stash these internally, not for
@@ -3845,6 +4302,18 @@ lws_sql_purify(char *escaped, const char *string, int len);
  */
 LWS_VISIBLE LWS_EXTERN const char *
 lws_json_purify(char *escaped, const char *string, int len);
+
+LWS_VISIBLE LWS_EXTERN int
+lws_plat_write_cert(struct lws_vhost *vhost, int is_key, int fd, void *buf,
+			int len);
+LWS_VISIBLE LWS_EXTERN int
+lws_plat_write_file(const char *filename, void *buf, int len);
+
+LWS_VISIBLE LWS_EXTERN int
+lws_plat_read_file(const char *filename, void *buf, int len);
+
+LWS_VISIBLE LWS_EXTERN int
+lws_plat_recommended_rsa_bits(void);
 ///@}
 
 /*! \defgroup ev libev helpers
@@ -4003,6 +4472,42 @@ enum pending_timeout {
  */
 LWS_VISIBLE LWS_EXTERN void
 lws_set_timeout(struct lws *wsi, enum pending_timeout reason, int secs);
+
+/**
+ * lws_set_timer() - schedules a callback on the wsi in the future
+ *
+ * \param wsi:	Websocket connection instance
+ * \param secs:	-1 removes any existing scheduled callback, otherwise the
+ *		number of seconds in the future the callback will occur at.
+ *
+ * When the deadline expires, the wsi will get a callback of type
+ * LWS_CALLBACK_TIMER and the timer is exhausted.  The deadline may be
+ * continuously deferred by further calls to lws_set_timer() with a later
+ * deadline, or cancelled by lws_set_timer(wsi, -1)
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_set_timer(struct lws *wsi, int secs);
+
+/*
+ * lws_timed_callback_vh_protocol() - calls back a protocol on a vhost after
+ * 					the specified delay
+ *
+ * \param vh:	 the vhost to call back
+ * \param protocol: the protocol to call back
+ * \param reason: callback reason
+ * \param secs:	how many seconds in the future to do the callback.  Set to
+ *		-1 to cancel the timer callback.
+ *
+ * Callback the specified protocol with a fake wsi pointing to the specified
+ * vhost and protocol, with the specified reason, at the specified time in the
+ * future.
+ *
+ * Returns 0 if OK.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_timed_callback_vh_protocol(struct lws_vhost *vh,
+			       const struct lws_protocols *prot,
+			       int reason, int secs);
 ///@}
 
 /*! \defgroup sending-data Sending data
@@ -4011,7 +4516,7 @@ lws_set_timeout(struct lws *wsi, enum pending_timeout reason, int secs);
 */
 //@{
 #if !defined(LWS_SIZEOFPTR)
-#define LWS_SIZEOFPTR (sizeof (void *))
+#define LWS_SIZEOFPTR ((int)sizeof (void *))
 #endif
 #if !defined(u_int64_t)
 #define u_int64_t unsigned long long
@@ -4327,9 +4832,31 @@ lws_callback_all_protocol_vhost_args(struct lws_vhost *vh,
  * - Which:  connections using this protocol on same VHOST as wsi ONLY
  * - When:   now
  * - What:   reason
+ *
+ * This is deprecated since v2.5, use lws_callback_vhost_protocols_vhost()
+ * which takes the pointer to the vhost directly without using or needing the
+ * wsi.
  */
 LWS_VISIBLE LWS_EXTERN int
-lws_callback_vhost_protocols(struct lws *wsi, int reason, void *in, int len);
+lws_callback_vhost_protocols(struct lws *wsi, int reason, void *in, int len)
+LWS_WARN_DEPRECATED;
+
+/**
+ * lws_callback_vhost_protocols_vhost() - Callback all protocols enabled on a vhost
+ *					with the given reason
+ *
+ * \param vh:		vhost that will get callbacks
+ * \param reason:	Callback reason index
+ * \param in:		in argument to callback
+ * \param len:		len argument to callback
+ *
+ * - Which:  connections using this protocol on same VHOST as wsi ONLY
+ * - When:   now
+ * - What:   reason
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_callback_vhost_protocols_vhost(struct lws_vhost *vh, int reason, void *in,
+				   size_t len);
 
 LWS_VISIBLE LWS_EXTERN int
 lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
@@ -4342,7 +4869,7 @@ lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
  *
  * \param wsi:	Websocket connection instance
  */
-LWS_VISIBLE LWS_EXTERN int
+LWS_VISIBLE LWS_EXTERN lws_sockfd_type
 lws_get_socket_fd(struct lws *wsi);
 
 /**
@@ -4627,7 +5154,7 @@ lws_get_peer_addresses(struct lws *wsi, lws_sockfd_type fd, char *name,
  */
 LWS_VISIBLE LWS_EXTERN const char *
 lws_get_peer_simple(struct lws *wsi, char *name, int namelen);
-#if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32)
+#if !defined(LWS_WITH_ESP32)
 /**
  * lws_interface_to_sa() - Convert interface name or IP to sockaddr struct
  *
@@ -4721,6 +5248,18 @@ lws_interface_to_sa(int ipv6, const char *ifname, struct sockaddr_in *addr,
 }
 
 /**
+ * lws_ptr_diff(): helper to report distance between pointers as an int
+ *
+ * \param head: the pointer with the larger address
+ * \param tail: the pointer with the smaller address
+ *
+ * This helper gives you an int representing the number of bytes further
+ * forward the first pointer is compared to the second pointer.
+ */
+#define lws_ptr_diff(head, tail) \
+			((int)((char *)(head) - (char *)(tail)))
+
+/**
  * lws_snprintf(): snprintf that truncates the returned length too
  *
  * \param str: destination buffer
@@ -4806,6 +5345,26 @@ lws_parse_uri(char *p, const char **prot, const char **ads, int *port,
  */
 LWS_VISIBLE LWS_EXTERN unsigned long
 lws_now_secs(void);
+
+/**
+ * lws_compare_time_t(): return relationship between two time_t
+ *
+ * \param context: struct lws_context
+ * \param t1: time_t 1
+ * \param t2: time_t 2
+ *
+ * returns <0 if t2 > t1; >0 if t1 > t2; or == 0 if t1 == t2.
+ *
+ * This is aware of clock discontiguities that may have affected either t1 or
+ * t2 and adapts the comparison for them.
+ *
+ * For the discontiguity detection to work, you must avoid any arithmetic on
+ * the times being compared.  For example to have a timeout that triggers
+ * 15s from when it was set, store the time it was set and compare like
+ * `if (lws_compare_time_t(context, now, set_time) > 15)`
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_compare_time_t(struct lws_context *context, time_t t1, time_t t2);
 
 /**
  * lws_get_context - Allow getting lws_context from a Websocket connection
@@ -4995,7 +5554,18 @@ lws_is_ssl(struct lws *wsi);
 LWS_VISIBLE LWS_EXTERN int
 lws_is_cgi(struct lws *wsi);
 
-#ifdef LWS_OPENSSL_SUPPORT
+
+struct lws_wifi_scan { /* generic wlan scan item */
+	struct lws_wifi_scan *next;
+	char ssid[32];
+	int32_t rssi; /* divide by .count to get db */
+	uint8_t bssid[6];
+	uint8_t count;
+	uint8_t channel;
+	uint8_t authmode;
+};
+
+#if defined(LWS_OPENSSL_SUPPORT) && !defined(LWS_WITH_MBEDTLS)
 /**
  * lws_get_ssl() - Return wsi's SSL context structure
  * \param wsi:	websocket connection
@@ -5005,6 +5575,154 @@ lws_is_cgi(struct lws *wsi);
 LWS_VISIBLE LWS_EXTERN SSL*
 lws_get_ssl(struct lws *wsi);
 #endif
+
+enum lws_tls_cert_info {
+	LWS_TLS_CERT_INFO_VALIDITY_FROM,
+	/**< fills .time with the time_t the cert validity started from */
+	LWS_TLS_CERT_INFO_VALIDITY_TO,
+	/**< fills .time with the time_t the cert validity ends at */
+	LWS_TLS_CERT_INFO_COMMON_NAME,
+	/**< fills up to len bytes of .ns.name with the cert common name */
+	LWS_TLS_CERT_INFO_ISSUER_NAME,
+	/**< fills up to len bytes of .ns.name with the cert issuer name */
+	LWS_TLS_CERT_INFO_USAGE,
+	/**< fills verified with a bitfield asserting the valid uses */
+	LWS_TLS_CERT_INFO_VERIFIED,
+	/**< fills .verified with a bool representing peer cert validity,
+	 *   call returns -1 if no cert */
+};
+
+union lws_tls_cert_info_results {
+	unsigned int verified;
+	time_t time;
+	unsigned int usage;
+	struct {
+		int len;
+		/* KEEP LAST... notice the [64] is only there because
+		 * name[] is not allowed in a union.  The actual length of
+		 * name[] is arbitrary and is passed into the api using the
+		 * len parameter.  Eg
+		 *
+		 * char big[1024];
+		 * union lws_tls_cert_info_results *buf =
+		 * 	(union lws_tls_cert_info_results *)big;
+		 *
+		 * lws_tls_peer_cert_info(wsi, type, buf, sizeof(big) -
+		 *			  sizeof(*buf) + sizeof(buf->ns.name));
+		 */
+		char name[64];
+	} ns;
+};
+
+/**
+ * lws_tls_peer_cert_info() - get information from the peer's TLS cert
+ *
+ * \param wsi: the connection to query
+ * \param type: one of LWS_TLS_CERT_INFO_
+ * \param buf: pointer to union to take result
+ * \param len: when result is a string, the true length of buf->ns.name[]
+ *
+ * lws_tls_peer_cert_info() lets you get hold of information from the peer
+ * certificate.
+ *
+ * Return 0 if there is a result in \p buf, or -1 indicating there was no cert
+ * or another problem.
+ *
+ * This function works the same no matter if the TLS backend is OpenSSL or
+ * mbedTLS.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_tls_peer_cert_info(struct lws *wsi, enum lws_tls_cert_info type,
+		       union lws_tls_cert_info_results *buf, size_t len);
+
+/**
+ * lws_tls_vhost_cert_info() - get information from the vhost's own TLS cert
+ *
+ * \param vhost: the vhost to query
+ * \param type: one of LWS_TLS_CERT_INFO_
+ * \param buf: pointer to union to take result
+ * \param len: when result is a string, the true length of buf->ns.name[]
+ *
+ * lws_tls_vhost_cert_info() lets you get hold of information from the vhost
+ * certificate.
+ *
+ * Return 0 if there is a result in \p buf, or -1 indicating there was no cert
+ * or another problem.
+ *
+ * This function works the same no matter if the TLS backend is OpenSSL or
+ * mbedTLS.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_tls_vhost_cert_info(struct lws_vhost *vhost, enum lws_tls_cert_info type,
+		        union lws_tls_cert_info_results *buf, size_t len);
+
+/**
+ * lws_tls_acme_sni_cert_create() - creates a temp selfsigned cert
+ *				    and attaches to a vhost
+ *
+ * \param vhost: the vhost to acquire the selfsigned cert
+ * \param san_a: SAN written into the certificate
+ * \param san_b: second SAN written into the certificate
+ *
+ *
+ * Returns 0 if created and attached to the vhost.  Returns -1 if problems and
+ * frees all allocations before returning.
+ *
+ * On success, any allocations are destroyed at vhost destruction automatically.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_tls_acme_sni_cert_create(struct lws_vhost *vhost, const char *san_a,
+			     const char *san_b);
+
+/**
+ * lws_tls_acme_sni_csr_create() - creates a CSR and related private key PEM
+ *
+ * \param context: lws_context used for random
+ * \param elements: array of LWS_TLS_REQ_ELEMENT_COUNT const char *
+ * \param csr: buffer that will get the b64URL(ASN-1 CSR)
+ * \param csr_len: max length of the csr buffer
+ * \param privkey_pem: pointer to pointer allocated to hold the privkey_pem
+ * \param privkey_len: pointer to size_t set to the length of the privkey_pem
+ *
+ * Creates a CSR according to the information in \p elements, and a private
+ * RSA key used to sign the CSR.
+ *
+ * The outputs are the b64URL(ASN-1 CSR) into csr, and the PEM private key into
+ * privkey_pem.
+ *
+ * Notice that \p elements points to an array of const char *s pointing to the
+ * information listed in the enum above.  If an entry is NULL or an empty
+ * string, the element is set to "none" in the CSR.
+ *
+ * Returns 0 on success or nonzero for failure.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_tls_acme_sni_csr_create(struct lws_context *context, const char *elements[],
+			    uint8_t *csr, size_t csr_len, char **privkey_pem,
+			    size_t *privkey_len);
+
+/**
+ * lws_tls_cert_updated() - update every vhost using the given cert path
+ *
+ * \param context: our lws_context
+ * \param certpath: the filepath to the certificate
+ * \param keypath: the filepath to the private key of the certificate
+ * \param mem_cert: copy of the cert in memory
+ * \param len_mem_cert: length of the copy of the cert in memory
+ * \param mem_privkey: copy of the private key in memory
+ * \param len_mem_privkey: length of the copy of the private key in memory
+ *
+ * Checks every vhost to see if it is the using certificate described by the
+ * the given filepaths.  If so, it attempts to update the vhost ssl_ctx to use
+ * the new certificate.
+ *
+ * Returns 0 on success or nonzero for failure.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_tls_cert_updated(struct lws_context *context, const char *certpath,
+		     const char *keypath,
+		     const char *mem_cert, size_t len_mem_cert,
+		     const char *mem_privkey, size_t len_mem_privkey);
 ///@}
 
 /** \defgroup lws_ring LWS Ringbuffer APIs
@@ -5229,6 +5947,9 @@ lws_ring_next_linear_insert_range(struct lws_ring *ring, void **start,
  */
 LWS_VISIBLE LWS_EXTERN void
 lws_ring_bump_head(struct lws_ring *ring, size_t bytes);
+
+LWS_VISIBLE LWS_EXTERN void
+lws_ring_dump(struct lws_ring *ring, uint32_t *tail);
 ///@}
 
 /** \defgroup sha SHA and B64 helpers
@@ -5265,16 +5986,40 @@ lws_SHA1(const unsigned char *d, size_t n, unsigned char *md);
 LWS_VISIBLE LWS_EXTERN int
 lws_b64_encode_string(const char *in, int in_len, char *out, int out_size);
 /**
+ * lws_b64_encode_string_url(): encode a string into base 64
+ *
+ * \param in: incoming buffer
+ * \param in_len: length of incoming buffer
+ * \param out: result buffer
+ * \param out_size: length of result buffer
+ *
+ * Encodes a string using b64 with the "URL" variant (+ -> -, and / -> _)
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_b64_encode_string_url(const char *in, int in_len, char *out, int out_size);
+/**
  * lws_b64_decode_string(): decode a string from base 64
  *
  * \param in: incoming buffer
  * \param out: result buffer
  * \param out_size: length of result buffer
  *
- * Decodes a string using b64
+ * Decodes a NUL-terminated string using b64
  */
 LWS_VISIBLE LWS_EXTERN int
 lws_b64_decode_string(const char *in, char *out, int out_size);
+/**
+ * lws_b64_decode_string_len(): decode a string from base 64
+ *
+ * \param in: incoming buffer
+ * \param in_len: length of incoming buffer
+ * \param out: result buffer
+ * \param out_size: length of result buffer
+ *
+ * Decodes a range of chars using b64
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_b64_decode_string_len(const char *in, int in_len, char *out, int out_size);
 ///@}
 
 
@@ -5730,6 +6475,247 @@ lws_email_destroy(struct lws_email *email);
 #endif
 //@}
 
+
+/** \defgroup lejp JSON parser
+ * ##JSON parsing related functions
+ * \ingroup lwsapi
+ *
+ * LEJP is an extremely lightweight JSON stream parser included in lws.
+ */
+//@{
+struct lejp_ctx;
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(_x) (sizeof(_x) / sizeof(_x[0]))
+#endif
+#define LEJP_FLAG_WS_KEEP 64
+#define LEJP_FLAG_WS_COMMENTLINE 32
+
+enum lejp_states {
+	LEJP_IDLE = 0,
+	LEJP_MEMBERS = 1,
+	LEJP_M_P = 2,
+	LEJP_MP_STRING = LEJP_FLAG_WS_KEEP | 3,
+	LEJP_MP_STRING_ESC = LEJP_FLAG_WS_KEEP | 4,
+	LEJP_MP_STRING_ESC_U1 = LEJP_FLAG_WS_KEEP | 5,
+	LEJP_MP_STRING_ESC_U2 = LEJP_FLAG_WS_KEEP | 6,
+	LEJP_MP_STRING_ESC_U3 = LEJP_FLAG_WS_KEEP | 7,
+	LEJP_MP_STRING_ESC_U4 = LEJP_FLAG_WS_KEEP | 8,
+	LEJP_MP_DELIM = 9,
+	LEJP_MP_VALUE = 10,
+	LEJP_MP_VALUE_NUM_INT = LEJP_FLAG_WS_KEEP | 11,
+	LEJP_MP_VALUE_NUM_EXP = LEJP_FLAG_WS_KEEP | 12,
+	LEJP_MP_VALUE_TOK = LEJP_FLAG_WS_KEEP | 13,
+	LEJP_MP_COMMA_OR_END = 14,
+	LEJP_MP_ARRAY_END = 15,
+};
+
+enum lejp_reasons {
+	LEJP_CONTINUE = -1,
+	LEJP_REJECT_IDLE_NO_BRACE = -2,
+	LEJP_REJECT_MEMBERS_NO_CLOSE = -3,
+	LEJP_REJECT_MP_NO_OPEN_QUOTE = -4,
+	LEJP_REJECT_MP_STRING_UNDERRUN = -5,
+	LEJP_REJECT_MP_ILLEGAL_CTRL = -6,
+	LEJP_REJECT_MP_STRING_ESC_ILLEGAL_ESC = -7,
+	LEJP_REJECT_ILLEGAL_HEX = -8,
+	LEJP_REJECT_MP_DELIM_MISSING_COLON = -9,
+	LEJP_REJECT_MP_DELIM_BAD_VALUE_START = -10,
+	LEJP_REJECT_MP_VAL_NUM_INT_NO_FRAC = -11,
+	LEJP_REJECT_MP_VAL_NUM_FORMAT = -12,
+	LEJP_REJECT_MP_VAL_NUM_EXP_BAD_EXP = -13,
+	LEJP_REJECT_MP_VAL_TOK_UNKNOWN = -14,
+	LEJP_REJECT_MP_C_OR_E_UNDERF = -15,
+	LEJP_REJECT_MP_C_OR_E_NOTARRAY = -16,
+	LEJP_REJECT_MP_ARRAY_END_MISSING = -17,
+	LEJP_REJECT_STACK_OVERFLOW = -18,
+	LEJP_REJECT_MP_DELIM_ISTACK = -19,
+	LEJP_REJECT_NUM_TOO_LONG = -20,
+	LEJP_REJECT_MP_C_OR_E_NEITHER = -21,
+	LEJP_REJECT_UNKNOWN = -22,
+	LEJP_REJECT_CALLBACK = -23
+};
+
+#define LEJP_FLAG_CB_IS_VALUE 64
+
+enum lejp_callbacks {
+	LEJPCB_CONSTRUCTED	= 0,
+	LEJPCB_DESTRUCTED	= 1,
+
+	LEJPCB_START		= 2,
+	LEJPCB_COMPLETE		= 3,
+	LEJPCB_FAILED		= 4,
+
+	LEJPCB_PAIR_NAME	= 5,
+
+	LEJPCB_VAL_TRUE		= LEJP_FLAG_CB_IS_VALUE | 6,
+	LEJPCB_VAL_FALSE	= LEJP_FLAG_CB_IS_VALUE | 7,
+	LEJPCB_VAL_NULL		= LEJP_FLAG_CB_IS_VALUE | 8,
+	LEJPCB_VAL_NUM_INT	= LEJP_FLAG_CB_IS_VALUE | 9,
+	LEJPCB_VAL_NUM_FLOAT	= LEJP_FLAG_CB_IS_VALUE | 10,
+	LEJPCB_VAL_STR_START	= 11, /* notice handle separately */
+	LEJPCB_VAL_STR_CHUNK	= LEJP_FLAG_CB_IS_VALUE | 12,
+	LEJPCB_VAL_STR_END	= LEJP_FLAG_CB_IS_VALUE | 13,
+
+	LEJPCB_ARRAY_START	= 14,
+	LEJPCB_ARRAY_END	= 15,
+
+	LEJPCB_OBJECT_START	= 16,
+	LEJPCB_OBJECT_END	= 17
+};
+
+/**
+ * _lejp_callback() - User parser actions
+ * \param ctx:	LEJP context
+ * \param reason:	Callback reason
+ *
+ *	Your user callback is associated with the context at construction time,
+ *	and receives calls as the parsing progresses.
+ *
+ *	All of the callbacks may be ignored and just return 0.
+ *
+ *	The reasons it might get called, found in @reason, are:
+ *
+ *  LEJPCB_CONSTRUCTED:  The context was just constructed... you might want to
+ *		perform one-time allocation for the life of the context.
+ *
+ *  LEJPCB_DESTRUCTED:	The context is being destructed... if you made any
+ *		allocations at construction-time, you can free them now
+ *
+ *  LEJPCB_START:	Parsing is beginning at the first byte of input
+ *
+ *  LEJPCB_COMPLETE:	Parsing has completed successfully.  You'll get a 0 or
+ *			positive return code from lejp_parse indicating the
+ *			amount of unused bytes left in the input buffer
+ *
+ *  LEJPCB_FAILED:	Parsing failed.  You'll get a negative error code
+ *  			returned from lejp_parse
+ *
+ *  LEJPCB_PAIR_NAME:	When a "name":"value" pair has had the name parsed,
+ *			this callback occurs.  You can find the new name at
+ *			the end of ctx->path[]
+ *
+ *  LEJPCB_VAL_TRUE:	The "true" value appeared
+ *
+ *  LEJPCB_VAL_FALSE:	The "false" value appeared
+ *
+ *  LEJPCB_VAL_NULL:	The "null" value appeared
+ *
+ *  LEJPCB_VAL_NUM_INT:	A string representing an integer is in ctx->buf
+ *
+ *  LEJPCB_VAL_NUM_FLOAT: A string representing a float is in ctx->buf
+ *
+ *  LEJPCB_VAL_STR_START: We are starting to parse a string, no data yet
+ *
+ *  LEJPCB_VAL_STR_CHUNK: We parsed LEJP_STRING_CHUNK -1 bytes of string data in
+ *			ctx->buf, which is as much as we can buffer, so we are
+ *			spilling it.  If all your strings are less than
+ *			LEJP_STRING_CHUNK - 1 bytes, you will never see this
+ *			callback.
+ *
+ *  LEJPCB_VAL_STR_END:	String parsing has completed, the last chunk of the
+ *			string is in ctx->buf.
+ *
+ *  LEJPCB_ARRAY_START:	An array started
+ *
+ *  LEJPCB_ARRAY_END:	An array ended
+ *
+ *  LEJPCB_OBJECT_START: An object started
+ *
+ *  LEJPCB_OBJECT_END:	An object ended
+ */
+LWS_EXTERN signed char _lejp_callback(struct lejp_ctx *ctx, char reason);
+
+typedef signed char (*lejp_callback)(struct lejp_ctx *ctx, char reason);
+
+#ifndef LEJP_MAX_DEPTH
+#define LEJP_MAX_DEPTH 12
+#endif
+#ifndef LEJP_MAX_INDEX_DEPTH
+#define LEJP_MAX_INDEX_DEPTH 5
+#endif
+#ifndef LEJP_MAX_PATH
+#define LEJP_MAX_PATH 128
+#endif
+#ifndef LEJP_STRING_CHUNK
+/* must be >= 30 to assemble floats */
+#define LEJP_STRING_CHUNK 255
+#endif
+
+enum num_flags {
+	LEJP_SEEN_MINUS = (1 << 0),
+	LEJP_SEEN_POINT = (1 << 1),
+	LEJP_SEEN_POST_POINT = (1 << 2),
+	LEJP_SEEN_EXP = (1 << 3)
+};
+
+struct _lejp_stack {
+	char s; /* lejp_state stack*/
+	char p;	/* path length */
+	char i; /* index array length */
+	char b; /* user bitfield */
+};
+
+struct lejp_ctx {
+
+	/* sorted by type for most compact alignment
+	 *
+	 * pointers
+	 */
+
+	signed char (*callback)(struct lejp_ctx *ctx, char reason);
+	void *user;
+	const char * const *paths;
+
+	/* arrays */
+
+	struct _lejp_stack st[LEJP_MAX_DEPTH];
+	uint16_t i[LEJP_MAX_INDEX_DEPTH]; /* index array */
+	uint16_t wild[LEJP_MAX_INDEX_DEPTH]; /* index array */
+	char path[LEJP_MAX_PATH];
+	char buf[LEJP_STRING_CHUNK];
+
+	/* int */
+
+	uint32_t line;
+
+	/* short */
+
+	uint16_t uni;
+
+	/* char */
+
+	uint8_t npos;
+	uint8_t dcount;
+	uint8_t f;
+	uint8_t sp; /* stack head */
+	uint8_t ipos; /* index stack depth */
+	uint8_t ppos;
+	uint8_t count_paths;
+	uint8_t path_match;
+	uint8_t path_match_len;
+	uint8_t wildcount;
+};
+
+LWS_VISIBLE LWS_EXTERN void
+lejp_construct(struct lejp_ctx *ctx,
+	       signed char (*callback)(struct lejp_ctx *ctx, char reason),
+	       void *user, const char * const *paths, unsigned char paths_count);
+
+LWS_VISIBLE LWS_EXTERN void
+lejp_destruct(struct lejp_ctx *ctx);
+
+LWS_VISIBLE LWS_EXTERN int
+lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len);
+
+LWS_VISIBLE LWS_EXTERN void
+lejp_change_callback(struct lejp_ctx *ctx,
+		     signed char (*callback)(struct lejp_ctx *ctx, char reason));
+
+LWS_VISIBLE LWS_EXTERN int
+lejp_get_wildcard(struct lejp_ctx *ctx, int wildcard, char *dest, int len);
+//@}
+
 /*
  * Stats are all uint64_t numbers that start at 0.
  * Index names here have the convention
@@ -5778,9 +6764,9 @@ LWS_VISIBLE LWS_EXTERN void
 lws_stats_log_dump(struct lws_context *context);
 #else
 static LWS_INLINE uint64_t
-lws_stats_get(struct lws_context *context, int index) { return 0; }
+lws_stats_get(struct lws_context *context, int index) { (void)context; (void)index;  return 0; }
 static LWS_INLINE void
-lws_stats_log_dump(struct lws_context *context) { }
+lws_stats_log_dump(struct lws_context *context) { (void)context; }
 #endif
 
 #ifdef __cplusplus

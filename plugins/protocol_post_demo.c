@@ -24,6 +24,7 @@
 #include "../lib/libwebsockets.h"
 #endif
 
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -40,7 +41,7 @@ struct per_session_data__post_demo {
 
 	char filename[64];
 	long file_length;
-#if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32)
+#if !defined(LWS_WITH_ESP32)
 	lws_filefd_type fd;
 #endif
 };
@@ -65,7 +66,7 @@ file_upload_cb(void *data, const char *name, const char *filename,
 {
 	struct per_session_data__post_demo *pss =
 			(struct per_session_data__post_demo *)data;
-#if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32)
+#if !defined(LWS_WITH_ESP32)
 	int n;
 #endif
 
@@ -75,8 +76,8 @@ file_upload_cb(void *data, const char *name, const char *filename,
 		/* we get the original filename in @filename arg, but for
 		 * simple demo use a fixed name so we don't have to deal with
 		 * attacks  */
-#if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32)
-		pss->fd = (lws_filefd_type)open("/tmp/post-file",
+#if !defined(LWS_WITH_ESP32)
+		pss->fd = (lws_filefd_type)(long long)open("/tmp/post-file",
 			       O_CREAT | O_TRUNC | O_RDWR, 0600);
 #endif
 		break;
@@ -89,8 +90,8 @@ file_upload_cb(void *data, const char *name, const char *filename,
 			if (pss->file_length > 100000)
 				return 1;
 
-#if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32)
-			n = write((int)pss->fd, buf, len);
+#if !defined(LWS_WITH_ESP32)
+			n = write((int)(long long)pss->fd, buf, len);
 			lwsl_notice("%s: write %d says %d\n", __func__, len, n);
 #else
 			lwsl_notice("%s: Received chunk size %d\n", __func__, len);
@@ -98,8 +99,8 @@ file_upload_cb(void *data, const char *name, const char *filename,
 		}
 		if (state == LWS_UFS_CONTENT)
 			break;
-#if !defined(LWS_WITH_ESP8266) && !defined(LWS_WITH_ESP32)
-		close((int)pss->fd);
+#if !defined(LWS_WITH_ESP32)
+		close((int)(long long)pss->fd);
 		pss->fd = LWS_INVALID_FILE;
 #endif
 		break;
@@ -133,7 +134,7 @@ callback_post_demo(struct lws *wsi, enum lws_callback_reasons reason,
 		}
 
 		/* let it parse the POST data */
-		if (lws_spa_process(pss->spa, in, len))
+		if (lws_spa_process(pss->spa, in, (int)len))
 			return -1;
 		break;
 
@@ -148,18 +149,24 @@ callback_post_demo(struct lws *wsi, enum lws_callback_reasons reason,
 			"<html><body><h1>Form results (after urldecoding)</h1>"
 			"<table><tr><td>Name</td><td>Length</td><td>Value</td></tr>");
 
-		for (n = 0; n < ARRAY_SIZE(param_names); n++)
-			p += lws_snprintf((char *)p, end - p,
+		for (n = 0; n < (int)ARRAY_SIZE(param_names); n++) {
+			if (!lws_spa_get_string(pss->spa, n))
+				p += lws_snprintf((char *)p, end - p,
+				    "<tr><td><b>%s</b></td><td>0</td><td>NULL</td></tr>",
+				    param_names[n]);
+			else
+				p += lws_snprintf((char *)p, end - p,
 				    "<tr><td><b>%s</b></td><td>%d</td><td>%s</td></tr>",
 				    param_names[n],
 				    lws_spa_get_length(pss->spa, n),
 				    lws_spa_get_string(pss->spa, n));
+		}
 
 		p += lws_snprintf((char *)p, end - p, "</table><br><b>filename:</b> %s, <b>length</b> %ld",
 				pss->filename, pss->file_length);
 
 		p += lws_snprintf((char *)p, end - p, "</body></html>");
-		pss->result_len = p - (unsigned char *)(pss->result + LWS_PRE);
+		pss->result_len = lws_ptr_diff(p, pss->result + LWS_PRE);
 
 		n = LWS_PRE + 1024;
 		buffer = malloc(n);
