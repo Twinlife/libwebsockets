@@ -1,0 +1,95 @@
+import("../../webrtc.gni")
+import("//build/config/android/config.gni")
+import("//build/config/android/rules.gni")
+
+config("libwebsockets_config") {
+}
+
+static_library("libwebsockets") {
+  defines = [
+    # lws_config_private.h
+    "LWS_HAVE_DLFCN_H",
+    "LWS_HAVE_FCNTL_H",
+    "LWS_HAVE_FORK",
+    "LWS_HAVE_GETENV",
+    "LWS_HAVE_INTTYPES_H",
+    "LWS_HAVE_TLS",
+    "LWS_HAVE_MALLOC",
+    "LWS_HAVE_MEMORY_H",
+    "LWS_HAVE_MEMSET",
+    "LWS_HAVE_NETINET_IN_H",
+    "LWS_HAVE_REALLOC",
+    "LWS_HAVE_SOCKET",
+    "LWS_HAVE_STDINT_H",
+    "LWS_HAVE_STDLIB_H",
+    "LWS_HAVE_STRERROR",
+    "LWS_HAVE_STRINGS_H",
+    "LWS_HAVE_STRING_H",
+    "LWS_HAVE_SYS_PRCTL_H",
+    "LWS_HAVE_SYS_SOCKET_H",
+    "LWS_HAVE_SYS_STAT_H",
+    "LWS_HAVE_SYS_TYPES_H",
+    "LWS_HAVE_UNISTD_H",
+    "LWS_HAVE_VFORK",
+    "LWS_HAVE_WORKING_FORK",
+    "LWS_HAVE_WORKING_VFORK",
+      
+    # lws_config.h
+    "LWS_WITH_BORINGSSL",
+    "LWS_LIBRARY_VERSION=\"2.4.0\"",
+    "LWS_LIBRARY_VERSION_MAJOR=2",
+    "LWS_LIBRARY_VERSION_MINOR=4",
+    "LWS_LIBRARY_VERSION_PATCH=0",
+    "LWS_LIBRARY_VERSION_NUMBER=(LWS_LIBRARY_VERSION_MAJOR*1000000)+(LWS_LIBRARY_VERSION_MINOR*1000)+LWS_LIBRARY_VERSION_PATCH",
+    "LWS_OPENSSL_SUPPORT",
+    "LWS_OPENSSL_CLIENT_CERTS=\"/system/etc/security/cacerts\"",
+    "LWS_NO_DAEMONIZE",
+    "LWS_MAX_SMP=1",
+    "LWS_BUILTIN_GETIFADDRS",
+    "LWS_HAVE_STDINT_H",
+    "LWS_HAVE_ATOLL",
+    "LWS_HAVE_TLS_CLIENT_METHOD",
+    "LWS_HAS_INTPTR_T",
+  ]
+  
+  include_dirs = [
+    "lib",
+  ]
+    
+  sources = [
+    "lib/alloc.c",
+    "lib/context.c",
+    "lib/handshake.c",
+    "lib/header.c",
+    "lib/pollfd.c",
+    "lib/output.c",
+    "lib/service.c",
+    "lib/libwebsockets.c",
+    "lib/client/client.c",
+    "lib/client/client-handshake.c",
+    "lib/client/client-parser.c",
+    "lib/client/ssl-client.c",    
+    "lib/ext/extension.c",   
+    "lib/misc/base64-decode.c",
+    "lib/misc/getifaddrs.c",
+    "lib/misc/lws-ring.c",
+    "lib/misc/sha-1.c",
+    "lib/plat/lws-plat-unix.c",
+    "lib/server/lws-spa.c",
+    "lib/server/parsers.c",
+    "lib/server/server.c",
+    "lib/server/ssl-server.c",
+    "lib/server/server-handshake.c",
+    "lib/tls/tls.c",    
+    "lib/tls/openssl/lws-genhash.c",
+    "lib/tls/openssl/lws-genrsa.c",
+    "lib/tls/openssl/openssl-client.c",
+    "lib/tls/openssl/openssl-server.c",    
+    "lib/tls/openssl/ssl.c",    
+  ]
+
+ deps = [
+    "//rtc_base:rtc_base",
+    "//third_party/boringssl",    
+  ]
+}

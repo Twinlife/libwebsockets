@@ -116,6 +116,9 @@ typedef unsigned long long lws_intptr_t;
 #if defined(__NetBSD__) || defined(__FreeBSD__) || defined(__QNX__)
 #include <netinet/in.h>
 #endif
+// --twinlife-- 18/01/22
+#include <netinet/in.h>  
+// --twinlife-- 18/01/22
 
 #define LWS_INLINE inline
 #define LWS_O_RDONLY O_RDONLY

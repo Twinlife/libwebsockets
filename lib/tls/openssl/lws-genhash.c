@@ -115,6 +115,7 @@ int
 lws_genhmac_init(struct lws_genhmac_ctx *ctx, enum lws_genhmac_types type,
 		 const uint8_t *key, size_t key_len)
 {
+  /* --twinlife-- 180122  
 	const char *ts;
 	const EVP_MD *md;
 	EVP_PKEY *pkey;
@@ -154,6 +155,8 @@ lws_genhmac_init(struct lws_genhmac_ctx *ctx, enum lws_genhmac_types type,
         EVP_PKEY_free(pkey);
 
 	return 0;
+  */
+  return -1;
 }
 
 int
