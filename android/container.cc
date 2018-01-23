@@ -22,7 +22,9 @@ namespace jni {
 
 #define BUFFER_SIZE 1024 * 1024 * 64
  
-struct per_session_data {
+struct userdata {
+  Container* container;
+  jlong session_id;
 };
 
 static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
@@ -31,32 +33,36 @@ static struct lws_protocols protocols[] = {
     {
     "callback",
     callback,
-    sizeof( struct per_session_data ),
+    sizeof(struct userdata),
     BUFFER_SIZE,
   },
   { NULL, NULL, 0, 0 } // end of list
 };
 
-static const struct lws_extension exts[] = {
-  { NULL, NULL, NULL }
-};
-
-  // TBD - to be removed
-static Container* container;
-  
 static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
-  return container->Callback(wsi, reason, user, in, len);
+  if (user) {
+    struct userdata* userdata = (struct userdata*)user;
+    return userdata->container->Callback(wsi, reason, user, in, len);
+  }
+  return 0;
 }
   
 static void emit_log(int level, const char* msg) {
-  
-  __android_log_write(ANDROID_LOG_INFO, "lws", msg);
+
+  if (level == LLL_NOTICE || level == LLL_INFO) {
+    __android_log_write(ANDROID_LOG_INFO, "lws", msg);
+  } else if (level == LLL_WARN) {
+    __android_log_write(ANDROID_LOG_WARN, "lws", msg);
+  } else if (level == LLL_ERR) {
+    __android_log_write(ANDROID_LOG_ERROR, "lws", msg);
+  } else {
+    __android_log_write(ANDROID_LOG_DEBUG, "lws", msg);
+  }
 }
 
 Container::Container(ObserverJni* observer) {
 
-  container = this;
   observer_ = observer;
   
   lws_set_log_level(LLL_ERR | LLL_WARN, emit_log);
@@ -73,9 +79,14 @@ Container::Container(ObserverJni* observer) {
 Container::~Container() {
 }  
 
-  struct lws* Container::CreateWebSocket(int port, const char* host, const char* path, bool secure) {
+  struct lws* Container::CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
+					 bool secure) {
 
   if (context_) {
+    struct userdata* userdata = (struct userdata*)lws_malloc(sizeof(struct userdata), "userdata");
+    userdata->container = this;
+    userdata->session_id = session_id;
+
     struct lws_client_connect_info info_ws;
     memset(&info_ws, 0, sizeof(info_ws));
     info_ws.port = port;
@@ -86,9 +97,8 @@ Container::~Container() {
     info_ws.host = host;
     info_ws.origin = host;
     info_ws.ietf_version_or_minus_one = -1;
-    info_ws.client_exts = exts;
     info_ws.protocol = protocols[0].name;
-      
+    info_ws.userdata = userdata;
     return lws_client_connect_via_info(&info_ws);
   }
 
@@ -116,29 +126,30 @@ void Container::SendBuffer(struct lws* websocket, void* buffer, size_t length, b
   
 int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
+  lwsl_debug("Container::Callback wsi=%p reason=%d user=%p in=%p len=%d", wsi, reason, user, in, len);
+
+  long session_id = -1;
+  if (user) {
+    struct userdata* userdata = (struct userdata*)user;
+    session_id = userdata->session_id;
+  }
+
   switch(reason) {
 
-  case LWS_CALLBACK_ESTABLISHED:
-    __android_log_print(ANDROID_LOG_ERROR, "CJ", "LWS_CALLBACK_ESTABLISHED");    
-    break;
-    
   case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-    __android_log_print(ANDROID_LOG_ERROR, "CJ", "LWS_CALLBACK_CLIENT_CONNECTION_ERROR");    
+    observer_->OnConnectError(session_id, in, len);
     break;
 
   case LWS_CALLBACK_CLIENT_ESTABLISHED:
-    __android_log_print(ANDROID_LOG_ERROR, "CJ", "LWS_CALLBACK_CLIENT_ESTABLISHED");        
-    observer_->OnConnect(wsi);
+    observer_->OnConnect(session_id);
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:
-    __android_log_print(ANDROID_LOG_ERROR, "CJ", "LWS_CALLBACK_CLIENT_WRITEABLE");            
-    observer_->OnWritable(wsi);
+    observer_->OnWritable(session_id);
     break;
     
   case LWS_CALLBACK_CLIENT_RECEIVE:
-    __android_log_print(ANDROID_LOG_ERROR, "CJ", "LWS_CALLBACK_CLIENT_RECEIVE");    
-    observer_->OnReceive(wsi, in, len, false);
+    observer_->OnReceive(session_id, in, len, false);
     break;
 
   default:

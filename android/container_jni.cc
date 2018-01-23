@@ -41,6 +41,7 @@ JNI_FUNCTION_DECLARATION(jlong,
 			 JNIEnv* jni,
                          jclass,
                          jlong container_p,
+			 jlong sessionId,
 			 jint port,
 			 jstring j_host,
 			 jstring j_path,
@@ -51,7 +52,7 @@ JNI_FUNCTION_DECLARATION(jlong,
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";  
   const char* path = jni->GetStringUTFChars(j_path, NULL);
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  struct lws* wsi = container->CreateWebSocket(port, host, path, secure);
+  struct lws* wsi = container->CreateWebSocket(sessionId, port, host, path, secure);
   jni->ReleaseStringUTFChars(j_host, host);
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   jni->ReleaseStringUTFChars(j_path, path);

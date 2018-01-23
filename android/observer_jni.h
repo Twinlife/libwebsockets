@@ -29,16 +29,19 @@ class ObserverJni {
 
   ~ObserverJni();
 
-  void OnConnect(struct lws* wsi);
+  void OnConnect(jlong session_id);
 
-  void OnWritable(struct lws* wsi);
+  void OnConnectError(jlong session_id, void* in, size_t len);
   
-  void OnReceive(struct lws* wsi, void* in, size_t len, bool binary);
+  void OnWritable(jlong session_id);
+
+  void OnReceive(jlong session_id, void* in, size_t len, bool binary);
   
  private:  
   const webrtc::jni::ScopedGlobalRef<jobject> j_observer_global_;
   const webrtc::jni::ScopedGlobalRef<jclass> j_observer_class_;
   const jmethodID j_on_connect_;
+  const jmethodID j_on_connect_error_;
   const jmethodID j_on_writable_;  
   const jmethodID j_on_message_;  
 };

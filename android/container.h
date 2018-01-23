@@ -25,7 +25,7 @@ class Container {
 
   ~Container();
 
-  struct lws* CreateWebSocket(int port, const char* host, const char* path, bool secure);
+  struct lws* CreateWebSocket(long sessionId, int port, const char* host, const char* path, bool secure);
 
   void Service(int timeout);
 
