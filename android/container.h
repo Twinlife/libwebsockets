@@ -10,6 +10,8 @@
 #ifndef WEBSOCKET_ANDROID_CONTAINER_H_
 #define WEBSOCKET_ANDROID_CONTAINER_H_
 
+#include "sdk/android/src/jni/jni_helpers.h"
+
 extern "C" {
 #include <libwebsockets.h>
 }
@@ -25,7 +27,7 @@ class Container {
 
   ~Container();
 
-  struct lws* CreateWebSocket(long sessionId, int port, const char* host, const char* path, bool secure);
+  struct lws* CreateWebSocket(jlong session_id, int port, const char* host, const char* path, bool secure);
 
   void Service(int timeout);
 
