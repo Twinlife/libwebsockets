@@ -19,6 +19,10 @@ extern "C" {
 namespace websocket {
 namespace jni {
 
+struct lws_reference {
+  struct lws* wsi;
+};
+
 class ObserverJni;
  
 class Container {
@@ -27,13 +31,14 @@ class Container {
 
   ~Container();
 
-  struct lws* CreateWebSocket(jlong session_id, int port, const char* host, const char* path, bool secure);
+  struct lws_reference* CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
+					bool secure);
 
   void Service(int timeout);
 
-  void TriggerWritable(struct lws* websocket);
+  void TriggerWritable(struct lws_reference* lws_reference);
   
-  void SendBuffer(struct lws* websocket, void* buffer, size_t length, bool binary);
+  void SendBuffer(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary);
   
   int Callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
   

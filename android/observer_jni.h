@@ -36,14 +36,17 @@ class ObserverJni {
   void OnWritable(jlong session_id);
 
   void OnReceive(jlong session_id, void* in, size_t len, bool binary);
-  
+
+  void OnClose(jlong session_id);
+
  private:  
   const webrtc::jni::ScopedGlobalRef<jobject> j_observer_global_;
   const webrtc::jni::ScopedGlobalRef<jclass> j_observer_class_;
   const jmethodID j_on_connect_;
   const jmethodID j_on_connect_error_;
   const jmethodID j_on_writable_;  
-  const jmethodID j_on_message_;  
+  const jmethodID j_on_message_;
+  const jmethodID j_on_close_;
 };
 
 }  // namespace jni

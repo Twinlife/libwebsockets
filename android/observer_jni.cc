@@ -25,7 +25,8 @@ ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
 						 "(JLjava/lang/String;)V")),
     j_on_writable_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onWritable", "(J)V")),
     j_on_message_(webrtc::jni::GetMethodID(jni, *j_observer_class_,
-						"onMessage", "(JLjava/nio/ByteBuffer;Z)V")) {
+					   "onMessage", "(JLjava/nio/ByteBuffer;Z)V")),
+    j_on_close_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onClose", "(J)V")) {
 }
 
 ObserverJni::~ObserverJni() {
@@ -67,6 +68,14 @@ void ObserverJni::OnReceive(jlong session_id, void* in, size_t len, bool binary)
   jobject j_buffer = env->NewDirectByteBuffer(in, len);
   env->CallVoidMethod(*j_observer_global_, j_on_message_, session_id, j_buffer, binary);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";    
+}
+
+void ObserverJni::OnClose(jlong session_id) {
+
+  JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
+  webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
+  env->CallVoidMethod(*j_observer_global_, j_on_close_, session_id);
+  CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
   
 }  // namespace jni

@@ -52,12 +52,23 @@ JNI_FUNCTION_DECLARATION(jlong,
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";  
   const char* path = jni->GetStringUTFChars(j_path, NULL);
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  struct lws* wsi = container->CreateWebSocket(sessionId, port, host, path, secure);
+  struct lws_reference* lws_reference = container->CreateWebSocket(sessionId, port, host, path, secure);
   jni->ReleaseStringUTFChars(j_host, host);
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   jni->ReleaseStringUTFChars(j_path, path);
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";      
-  return webrtc::jni::jlongFromPointer(wsi);
+  return webrtc::jni::jlongFromPointer(lws_reference);
+}
+
+JNI_FUNCTION_DECLARATION(void,
+			 ContainerImpl_nativeFreeReference,
+			 JNIEnv* jni,
+                         jclass,
+                         jlong container_p,
+			 jlong lws_reference_p) {
+
+  struct lws_reference* lws_reference = reinterpret_cast<struct lws_reference*>(lws_reference_p);
+  lws_free(lws_reference);
 }
 
 JNI_FUNCTION_DECLARATION(void,
@@ -76,24 +87,24 @@ JNI_FUNCTION_DECLARATION(void,
 			 JNIEnv* jni,
                          jclass,
                          jlong container_p,
-			 jlong websocket_p) {
+			 jlong lws_reference_p) {
 
   Container* container = reinterpret_cast<Container*>(container_p);
-  struct lws* websocket = reinterpret_cast<struct lws*>(websocket_p);  
-  container->TriggerWritable(websocket);
-}  
+  struct lws_reference* lws_reference = reinterpret_cast<struct lws_reference*>(lws_reference_p);
+  container->TriggerWritable(lws_reference);
+}
 
 JNI_FUNCTION_DECLARATION(void,
 			 ContainerImpl_nativeSendMessage,
 			 JNIEnv* jni,
                          jclass,
                          jlong container_p,
-			 jlong websocket_p,			 
+			 jlong lws_reference_p,
 			 jbyteArray message,
 			 jboolean binary) {
 
   Container* container = reinterpret_cast<Container*>(container_p);
-  struct lws* websocket = reinterpret_cast<struct lws*>(websocket_p);    
+  struct lws_reference* lws_reference = reinterpret_cast<struct lws_reference*>(lws_reference_p);
   jbyte* bytes = jni->GetByteArrayElements(message, nullptr);
   CHECK_EXCEPTION(jni) << "error during GetByteArrayElements";
   size_t length = jni->GetArrayLength(message);
@@ -103,7 +114,7 @@ JNI_FUNCTION_DECLARATION(void,
   std::memcpy(data_buffer, bytes, length);
   jni->ReleaseByteArrayElements(message, bytes, JNI_ABORT);
   CHECK_EXCEPTION(jni) << "error during ReleaseByteArrayElements";  
-  container->SendBuffer(websocket, data_buffer, length, binary);
+  container->SendBuffer(lws_reference, data_buffer, length, binary);
   lws_free(buffer);
 }
 

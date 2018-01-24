@@ -21,10 +21,11 @@ namespace websocket {
 namespace jni {
 
 #define BUFFER_SIZE 1024 * 1024 * 64
- 
+
 struct userdata {
   Container* container;
   jlong session_id;
+  struct lws_reference* lws_reference;
 };
 
 static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
@@ -79,13 +80,15 @@ Container::Container(ObserverJni* observer) {
 Container::~Container() {
 }  
 
-  struct lws* Container::CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
-					 bool secure) {
-
+  struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, const char* host,
+						   const char* path, bool secure) {
   if (context_) {
-    struct userdata* userdata = (struct userdata*)lws_malloc(sizeof(struct userdata), "userdata");
+    struct lws_reference* lws_reference = (struct lws_reference*)lws_malloc(sizeof(struct lws_reference),
+									    "container");
+    struct userdata* userdata = (struct userdata*)lws_malloc(sizeof(struct userdata), "container");
     userdata->container = this;
     userdata->session_id = session_id;
+    userdata->lws_reference = lws_reference;
 
     struct lws_client_connect_info info_ws;
     memset(&info_ws, 0, sizeof(info_ws));
@@ -99,7 +102,9 @@ Container::~Container() {
     info_ws.ietf_version_or_minus_one = -1;
     info_ws.protocol = protocols[0].name;
     info_ws.userdata = userdata;
-    return lws_client_connect_via_info(&info_ws);
+
+    lws_reference->wsi = lws_client_connect_via_info(&info_ws);
+    return lws_reference;
   }
 
   return NULL;
@@ -112,16 +117,22 @@ void Container::Service(int timeout) {
   }
 }
 
-void Container::TriggerWritable(struct lws* websocket) {
+void Container::TriggerWritable(struct lws_reference* lws_reference) {
 
-  if (context_) {  
-    lws_callback_on_writable(websocket);
+  if (context_) {
+    struct lws* wsi = lws_reference->wsi;
+    if (wsi) {
+      lws_callback_on_writable(wsi);
+    }
   }
 }  
 
-void Container::SendBuffer(struct lws* websocket, void* buffer, size_t length, bool binary) {
+void Container::SendBuffer(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary) {
 
-  lws_write(websocket, (unsigned char *)buffer, length, LWS_WRITE_TEXT);
+  struct lws* wsi = lws_reference->wsi;
+  if (wsi) {
+    lws_write(wsi, (unsigned char *)buffer, length, LWS_WRITE_TEXT);
+  }
 }
   
 int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
@@ -136,12 +147,12 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 
   switch(reason) {
 
-  case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-    observer_->OnConnectError(session_id, in, len);
-    break;
-
   case LWS_CALLBACK_CLIENT_ESTABLISHED:
     observer_->OnConnect(session_id);
+    break;
+
+  case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
+    observer_->OnConnectError(session_id, in, len);
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:
@@ -150,6 +161,10 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     
   case LWS_CALLBACK_CLIENT_RECEIVE:
     observer_->OnReceive(session_id, in, len, false);
+    break;
+
+  case LWS_CALLBACK_CLOSED:
+    observer_->OnClose(session_id);
     break;
 
   default:
