@@ -686,7 +686,9 @@ struct lws_ring {
 };
 
 /* this is not usable directly by user code any more, lws_close_reason() */
-#define LWS_WRITE_CLOSE 4
+// --twinlife-- 180125
+//#define LWS_WRITE_CLOSE 4
+// --twinlife-- 180125
 
 struct lws_protocols;
 struct lws;

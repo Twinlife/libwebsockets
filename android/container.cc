@@ -22,6 +22,12 @@ namespace jni {
 
 #define BUFFER_SIZE 1024 * 1024 * 64
 
+//
+// Ping messages are sent every 6 minutes by the server
+// If no answer is received during 12 minutes the connection is closed by xthe server
+//
+#define KEEP_ALIVE_TIMEOUT 360 * 2
+
 struct userdata {
   Container* container;
   jlong session_id;
@@ -74,6 +80,7 @@ Container::Container(ObserverJni* observer) {
   info_.gid = -1;
   info_.uid = -1;
   info_.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+  info_.ws_ping_pong_interval = KEEP_ALIVE_TIMEOUT;
   context_ = lws_create_context(&info_);
 }
 
@@ -82,6 +89,7 @@ Container::~Container() {
 
   struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, const char* host,
 						   const char* path, bool secure) {
+
   if (context_) {
     struct lws_reference* lws_reference = (struct lws_reference*)lws_malloc(sizeof(struct lws_reference),
 									    "container");
@@ -127,11 +135,27 @@ void Container::TriggerWritable(struct lws_reference* lws_reference) {
   }
 }  
 
-void Container::SendBuffer(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary) {
+void Container::SendMessage(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary) {
 
   struct lws* wsi = lws_reference->wsi;
   if (wsi) {
     lws_write(wsi, (unsigned char *)buffer, length, LWS_WRITE_TEXT);
+  }
+}
+
+void Container::SendCloseMessage(struct lws_reference* lws_reference) {
+
+  if (context_) {
+    struct lws* wsi = lws_reference->wsi;
+    if (wsi) {
+      lws_close_status status = LWS_CLOSE_STATUS_GOINGAWAY;
+      unsigned char buffer[2 + LWS_SEND_BUFFER_PRE_PADDING + LWS_SEND_BUFFER_POST_PADDING];
+      unsigned char* data_buffer = buffer + LWS_SEND_BUFFER_PRE_PADDING;
+      unsigned char* p = data_buffer;
+      *p++ = (((int)status) >> 8) & 0xff;
+      *p++ = ((int)status) & 0xff;
+      lws_write(wsi, data_buffer, 2, LWS_WRITE_CLOSE);
+    }
   }
 }
   
@@ -140,7 +164,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
   lwsl_debug("Container::Callback wsi=%p reason=%d user=%p in=%p len=%d", wsi, reason, user, in, len);
 
   long session_id = -1;
-  if (user) {
+  if (user && user == wsi->user_space) {
     struct userdata* userdata = (struct userdata*)user;
     session_id = userdata->session_id;
   }

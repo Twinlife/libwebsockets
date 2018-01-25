@@ -114,8 +114,20 @@ JNI_FUNCTION_DECLARATION(void,
   std::memcpy(data_buffer, bytes, length);
   jni->ReleaseByteArrayElements(message, bytes, JNI_ABORT);
   CHECK_EXCEPTION(jni) << "error during ReleaseByteArrayElements";  
-  container->SendBuffer(lws_reference, data_buffer, length, binary);
+  container->SendMessage(lws_reference, data_buffer, length, binary);
   lws_free(buffer);
+}
+
+JNI_FUNCTION_DECLARATION(void,
+			 ContainerImpl_nativeSendCloseMessage,
+			 JNIEnv* jni,
+                         jclass,
+                         jlong container_p,
+			 jlong lws_reference_p) {
+
+  Container* container = reinterpret_cast<Container*>(container_p);
+  struct lws_reference* lws_reference = reinterpret_cast<struct lws_reference*>(lws_reference_p);
+  container->SendCloseMessage(lws_reference);
 }
 
 }

@@ -38,7 +38,9 @@ class Container {
 
   void TriggerWritable(struct lws_reference* lws_reference);
   
-  void SendBuffer(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary);
+  void SendMessage(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary);
+
+  void SendCloseMessage(struct lws_reference* lws_reference);
   
   int Callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
   

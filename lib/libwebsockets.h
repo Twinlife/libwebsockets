@@ -116,9 +116,9 @@ typedef unsigned long long lws_intptr_t;
 #if defined(__NetBSD__) || defined(__FreeBSD__) || defined(__QNX__)
 #include <netinet/in.h>
 #endif
-// --twinlife-- 18/01/22
+// --twinlife-- 180122
 #include <netinet/in.h>  
-// --twinlife-- 18/01/22
+// --twinlife-- 180122
 
 #define LWS_INLINE inline
 #define LWS_O_RDONLY O_RDONLY
@@ -4557,6 +4557,9 @@ enum lws_write_protocol {
 	/**< Send HTTP content */
 
 	/* LWS_WRITE_CLOSE is handled by lws_close_reason() */
+// --twinlife-- 180125
+	LWS_WRITE_CLOSE						= 4,
+// --twinlife-- 180125
 	LWS_WRITE_PING						= 5,
 	LWS_WRITE_PONG						= 6,
 
