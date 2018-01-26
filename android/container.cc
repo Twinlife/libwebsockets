@@ -48,13 +48,17 @@ static struct lws_protocols protocols[] = {
 
 static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
-  if (user) {
-    struct userdata* userdata = (struct userdata*)user;
-    return userdata->container->Callback(wsi, reason, user, in, len);
+  lwsl_debug("callback wsi=%p reason=%d user=%p in=%p len=%lu", wsi, reason, user, in, (unsigned long)len);
+
+  if (wsi && wsi->user_space) {
+    struct userdata* userdata = (struct userdata*)wsi->user_space;
+    if (userdata->container) {
+      return userdata->container->Callback(wsi, reason, user, in, len);
+    }
   }
   return 0;
 }
-  
+
 static void emit_log(int level, const char* msg) {
 
   if (level == LLL_NOTICE || level == LLL_INFO) {
@@ -82,13 +86,15 @@ Container::Container(ObserverJni* observer) {
   info_.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
   info_.ws_ping_pong_interval = KEEP_ALIVE_TIMEOUT;
   context_ = lws_create_context(&info_);
+
+  root_certificate_verified_ = false;
 }
 
 Container::~Container() {
 }  
 
-  struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, const char* host,
-						   const char* path, bool secure) {
+struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, const char* host,
+						 const char* path, bool secure) {
 
   if (context_) {
     struct lws_reference* lws_reference = (struct lws_reference*)lws_malloc(sizeof(struct lws_reference),
@@ -161,13 +167,8 @@ void Container::SendCloseMessage(struct lws_reference* lws_reference) {
   
 int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
-  lwsl_debug("Container::Callback wsi=%p reason=%d user=%p in=%p len=%d", wsi, reason, user, in, len);
-
-  long session_id = -1;
-  if (user && user == wsi->user_space) {
-    struct userdata* userdata = (struct userdata*)user;
-    session_id = userdata->session_id;
-  }
+  struct userdata* userdata = (struct userdata*)wsi->user_space;
+  long session_id = userdata->session_id;
 
   switch(reason) {
 
@@ -176,7 +177,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     break;
 
   case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-    observer_->OnConnectError(session_id, in, len);
+    observer_->OnConnectError(session_id, (const char *)in, len);
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:
@@ -189,6 +190,56 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 
   case LWS_CALLBACK_CLOSED:
     observer_->OnClose(session_id);
+    break;
+
+  case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:
+    if (!root_certificate_verified_) {
+      root_certificate_verified_ = true;
+
+      bool preverify_ok = len;
+      bool verify_ok = false;
+      if (preverify_ok) {
+	X509_STORE_CTX* x509_store_ctx = (X509_STORE_CTX *)user;
+	X509* x509 = X509_STORE_CTX_get_current_cert(x509_store_ctx);
+	if (x509) {
+	  const char* common_name = NULL;
+	  X509_NAME* name = X509_get_subject_name(x509);
+	  int entry_count = X509_NAME_entry_count(name);
+	  for (int i = 0; i < entry_count; i++) {
+	    X509_NAME_ENTRY* name_entry = X509_NAME_get_entry(name, i);
+	    int nid = OBJ_obj2nid(X509_NAME_ENTRY_get_object(name_entry));
+	    if (nid == NID_commonName) {
+	      common_name = (const char*)ASN1_STRING_get0_data(X509_NAME_ENTRY_get_data(name_entry));
+	      break;
+	    }
+	  }
+	  uint8_t* bytes = NULL;
+	  int length = 0;
+	  EVP_PKEY* pkey = X509_get_pubkey(x509);
+	  if (pkey) {
+	    length = i2d_PublicKey(pkey, &bytes);
+	  }
+
+	  if (common_name && bytes && length > 0) {
+	    verify_ok = observer_->OnVerify(session_id, common_name, bytes, length);
+	  }
+
+	  if (bytes) {
+	    OPENSSL_free(bytes);
+	  }
+	  if (name) {
+	    X509_NAME_free(name);
+	  }
+	  if (pkey) {
+	    EVP_PKEY_free(pkey);
+	  }
+	  if (!verify_ok) {
+	    return -1;
+	  }
+	  break;
+	}
+      }
+    }
     break;
 
   default:

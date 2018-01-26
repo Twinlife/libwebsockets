@@ -48,6 +48,7 @@ class Container {
   ObserverJni* observer_;
   lws_context_creation_info info_;
   lws_context* context_;
+  bool root_certificate_verified_;
 };
 
 }  // namespace jni

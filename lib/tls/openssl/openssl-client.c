@@ -33,6 +33,8 @@ OpenSSL_client_verify_callback(int preverify_ok, X509_STORE_CTX *x509_ctx)
 	int n;
 	struct lws *wsi;
 
+// --twinlife-- 180125
+#if 0
 	/* keep old behaviour accepting self-signed server certs */
 	if (!preverify_ok) {
 		int err = X509_STORE_CTX_get_error(x509_ctx);
@@ -59,6 +61,8 @@ OpenSSL_client_verify_callback(int preverify_ok, X509_STORE_CTX *x509_ctx)
 			}
 		}
 	}
+#endif
+// --twinlife-- 180125
 
 	ssl = X509_STORE_CTX_get_ex_data(x509_ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
 	wsi = SSL_get_ex_data(ssl, openssl_websocket_private_data_index);
