@@ -32,6 +32,7 @@ struct userdata {
   Container* container;
   jlong session_id;
   struct lws_reference* lws_reference;
+  bool root_certificate_verified;
 };
 
 static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
@@ -49,8 +50,7 @@ static struct lws_protocols protocols[] = {
 static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
   lwsl_debug("callback wsi=%p reason=%d user=%p in=%p len=%lu", wsi, reason, user, in, (unsigned long)len);
-
-  if (wsi && wsi->user_space) {
+  if (wsi && wsi->user_space && reason != LWS_CALLBACK_EVENT_WAIT_CANCELLED) {
     struct userdata* userdata = (struct userdata*)wsi->user_space;
     if (userdata->container) {
       return userdata->container->Callback(wsi, reason, user, in, len);
@@ -85,24 +85,37 @@ Container::Container(ObserverJni* observer) {
   info_.uid = -1;
   info_.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
   info_.ws_ping_pong_interval = KEEP_ALIVE_TIMEOUT;
-  context_ = lws_create_context(&info_);
 
-  root_certificate_verified_ = false;
+  context_ = lws_create_context(&info_);
 }
 
 Container::~Container() {
 }  
 
 struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, const char* host,
-						 const char* path, bool secure) {
+						 const char* path, bool secure,
+						 const char* proxy_host, int proxy_port) {
 
   if (context_) {
+    struct lws_vhost* vhost = context_->vhost_list;
+    if (vhost) {
+      if (proxy_host && proxy_port != 0) {
+	vhost->http_proxy_port = proxy_port;
+	strncpy(vhost->http_proxy_address, proxy_host, sizeof(vhost->http_proxy_address) - 1);
+	vhost->http_proxy_address[sizeof(vhost->http_proxy_address) - 1] = '\0';
+      } else {
+	vhost->http_proxy_port = 0;
+	vhost->http_proxy_address[0] = '\0';
+      }
+    }
+
     struct lws_reference* lws_reference = (struct lws_reference*)lws_malloc(sizeof(struct lws_reference),
 									    "container");
     struct userdata* userdata = (struct userdata*)lws_malloc(sizeof(struct userdata), "container");
     userdata->container = this;
     userdata->session_id = session_id;
     userdata->lws_reference = lws_reference;
+    userdata->root_certificate_verified = false;
 
     struct lws_client_connect_info info_ws;
     memset(&info_ws, 0, sizeof(info_ws));
@@ -120,7 +133,6 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
     lws_reference->wsi = lws_client_connect_via_info(&info_ws);
     return lws_reference;
   }
-
   return NULL;
 }
 
@@ -193,8 +205,8 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     break;
 
   case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:
-    if (!root_certificate_verified_) {
-      root_certificate_verified_ = true;
+    if (!userdata->root_certificate_verified) {
+      userdata->root_certificate_verified = true;
 
       bool preverify_ok = len;
       bool verify_ok = false;
@@ -223,12 +235,8 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 	  if (common_name && bytes && length > 0) {
 	    verify_ok = observer_->OnVerify(session_id, common_name, bytes, length);
 	  }
-
 	  if (bytes) {
 	    OPENSSL_free(bytes);
-	  }
-	  if (name) {
-	    X509_NAME_free(name);
 	  }
 	  if (pkey) {
 	    EVP_PKEY_free(pkey);

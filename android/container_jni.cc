@@ -45,18 +45,31 @@ JNI_FUNCTION_DECLARATION(jlong,
 			 jint port,
 			 jstring j_host,
 			 jstring j_path,
-			 jboolean secure) {
+			 jboolean secure,
+			 jstring j_proxy_host,
+			 jint proxy_port) {
 
   Container* container = reinterpret_cast<Container*>(container_p);
-  const char* host = jni->GetStringUTFChars(j_host, NULL);
-  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";  
-  const char* path = jni->GetStringUTFChars(j_path, NULL);
+  const char* host = j_host ? jni->GetStringUTFChars(j_host, NULL) : NULL;
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  struct lws_reference* lws_reference = container->CreateWebSocket(sessionId, port, host, path, secure);
-  jni->ReleaseStringUTFChars(j_host, host);
+  const char* path = j_path ? jni->GetStringUTFChars(j_path, NULL) : NULL;
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  jni->ReleaseStringUTFChars(j_path, path);
-  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";      
+  const char* proxy_host = j_proxy_host ? jni->GetStringUTFChars(j_proxy_host, NULL) : NULL;
+  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  struct lws_reference* lws_reference = container->CreateWebSocket(sessionId, port, host, path, secure,
+								   proxy_host, proxy_port);
+  if (host) {
+    jni->ReleaseStringUTFChars(j_host, host);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  if (path) {
+    jni->ReleaseStringUTFChars(j_path, path);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  if (proxy_host) {
+    jni->ReleaseStringUTFChars(j_proxy_host, proxy_host);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
   return webrtc::jni::jlongFromPointer(lws_reference);
 }
 

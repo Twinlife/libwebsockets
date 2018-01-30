@@ -32,7 +32,7 @@ class Container {
   ~Container();
 
   struct lws_reference* CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
-					bool secure);
+					bool secure, const char* proxy_host, int proxy_port);
 
   void Service(int timeout);
 
@@ -48,7 +48,6 @@ class Container {
   ObserverJni* observer_;
   lws_context_creation_info info_;
   lws_context* context_;
-  bool root_certificate_verified_;
 };
 
 }  // namespace jni
