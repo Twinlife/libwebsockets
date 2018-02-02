@@ -46,18 +46,25 @@ JNI_FUNCTION_DECLARATION(jlong,
 			 jstring j_host,
 			 jstring j_path,
 			 jboolean secure,
-			 jstring j_proxy_host,
-			 jint proxy_port) {
+			 jstring j_proxy_address,
+			 jint proxy_port,
+			 jstring j_proxy_username,
+			 jstring j_proxy_password) {
 
   Container* container = reinterpret_cast<Container*>(container_p);
   const char* host = j_host ? jni->GetStringUTFChars(j_host, NULL) : NULL;
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   const char* path = j_path ? jni->GetStringUTFChars(j_path, NULL) : NULL;
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  const char* proxy_host = j_proxy_host ? jni->GetStringUTFChars(j_proxy_host, NULL) : NULL;
+  const char* proxy_address = j_proxy_address ? jni->GetStringUTFChars(j_proxy_address, NULL) : NULL;
+  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  const char* proxy_username = j_proxy_username ? jni->GetStringUTFChars(j_proxy_username, NULL) : NULL;
+  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  const char* proxy_password = j_proxy_password ? jni->GetStringUTFChars(j_proxy_password, NULL) : NULL;
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   struct lws_reference* lws_reference = container->CreateWebSocket(sessionId, port, host, path, secure,
-								   proxy_host, proxy_port);
+								   proxy_address, proxy_port,
+								   proxy_username, proxy_password);
   if (host) {
     jni->ReleaseStringUTFChars(j_host, host);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
@@ -66,8 +73,16 @@ JNI_FUNCTION_DECLARATION(jlong,
     jni->ReleaseStringUTFChars(j_path, path);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
-  if (proxy_host) {
-    jni->ReleaseStringUTFChars(j_proxy_host, proxy_host);
+  if (proxy_address) {
+    jni->ReleaseStringUTFChars(j_proxy_address, proxy_address);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  if (proxy_username) {
+    jni->ReleaseStringUTFChars(j_proxy_username, proxy_username);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  if (proxy_password) {
+    jni->ReleaseStringUTFChars(j_proxy_password, proxy_password);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
   return webrtc::jni::jlongFromPointer(lws_reference);

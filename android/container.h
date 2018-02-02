@@ -32,7 +32,8 @@ class Container {
   ~Container();
 
   struct lws_reference* CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
-					bool secure, const char* proxy_host, int proxy_port);
+					bool secure, const char* proxy_address, int proxy_port,
+					const char* proxy_username, const char* proxy_password);
 
   void Service(int timeout);
 

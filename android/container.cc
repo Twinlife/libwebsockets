@@ -14,6 +14,8 @@ extern "C" {
 #include <private-libwebsockets.h>
 }
 
+#include "rtc_base/base64.h"
+
 #include "container.h"
 #include "observer_jni.h"
 
@@ -94,15 +96,30 @@ Container::~Container() {
 
 struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, const char* host,
 						 const char* path, bool secure,
-						 const char* proxy_host, int proxy_port) {
+						 const char* proxy_address, int proxy_port,
+						 const char* proxy_username, const char* proxy_password) {
 
   if (context_) {
     struct lws_vhost* vhost = context_->vhost_list;
     if (vhost) {
-      if (proxy_host && proxy_port != 0) {
+      if (proxy_address && proxy_port != 0) {
 	vhost->http_proxy_port = proxy_port;
-	strncpy(vhost->http_proxy_address, proxy_host, sizeof(vhost->http_proxy_address) - 1);
+	strncpy(vhost->http_proxy_address, proxy_address, sizeof(vhost->http_proxy_address) - 1);
 	vhost->http_proxy_address[sizeof(vhost->http_proxy_address) - 1] = '\0';
+	if (proxy_username && proxy_password) {
+	  char *auth_token = (char *)lws_malloc(strlen(proxy_username) + strlen(proxy_password) + 1,
+						"container");
+	  strcpy(auth_token, proxy_username);
+	  strcat(auth_token, ":");
+	  strcat(auth_token, proxy_password);
+	  std::string base64_auth_token = rtc::Base64::Encode(auth_token);
+	  strncpy(vhost->proxy_basic_auth_token, base64_auth_token.c_str(),
+		  sizeof(vhost->proxy_basic_auth_token) - 1);
+	  vhost->proxy_basic_auth_token[sizeof(vhost->proxy_basic_auth_token) - 1] = '\0';
+	  lws_free(auth_token);
+	} else {
+	  vhost->proxy_basic_auth_token[0] = '\0';
+	}
       } else {
 	vhost->http_proxy_port = 0;
 	vhost->http_proxy_address[0] = '\0';
