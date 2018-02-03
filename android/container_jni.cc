@@ -54,14 +54,26 @@ JNI_FUNCTION_DECLARATION(jlong,
   Container* container = reinterpret_cast<Container*>(container_p);
   const char* host = j_host ? jni->GetStringUTFChars(j_host, NULL) : NULL;
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  const char* path = j_path ? jni->GetStringUTFChars(j_path, NULL) : NULL;
-  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  const char* proxy_address = j_proxy_address ? jni->GetStringUTFChars(j_proxy_address, NULL) : NULL;
-  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  const char* proxy_username = j_proxy_username ? jni->GetStringUTFChars(j_proxy_username, NULL) : NULL;
-  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  const char* proxy_password = j_proxy_password ? jni->GetStringUTFChars(j_proxy_password, NULL) : NULL;
-  CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  const char* path = NULL;
+  if (!webrtc::jni::IsNull(jni, j_path)) {
+    path = jni->GetStringUTFChars(j_path, NULL);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  const char* proxy_address = NULL;
+  if (!webrtc::jni::IsNull(jni, j_proxy_address)) {
+    proxy_address = jni->GetStringUTFChars(j_proxy_address, NULL);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  const char* proxy_username = NULL;
+  if (!webrtc::jni::IsNull(jni, j_proxy_username)) {
+    proxy_username = jni->GetStringUTFChars(j_proxy_username, NULL);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  const char* proxy_password = NULL;
+  if (!webrtc::jni::IsNull(jni, j_proxy_password)) {
+    proxy_password = jni->GetStringUTFChars(j_proxy_password, NULL);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
   struct lws_reference* lws_reference = container->CreateWebSocket(sessionId, port, host, path, secure,
 								   proxy_address, proxy_port,
 								   proxy_username, proxy_password);
