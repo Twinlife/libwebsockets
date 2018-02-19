@@ -24,11 +24,10 @@ namespace jni {
 
 #define BUFFER_SIZE 1024 * 1024 * 64
 
-//
-// Ping messages are sent every 6 minutes by the server
-// If no answer is received during 12 minutes the connection is closed by xthe server
-//
-#define KEEP_ALIVE_TIMEOUT 360 * 2
+#define TCP_KEEP_ALIVE 60
+#define TCP_KEEP_ALIVE_PROBES 6
+#define TCP_KEEP_ALIVE_INTERVAL 10
+#define PING_PONG_INTERVAL 360
 
 struct userdata {
   Container* container;
@@ -86,7 +85,10 @@ Container::Container(ObserverJni* observer) {
   info_.gid = -1;
   info_.uid = -1;
   info_.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
-  info_.ws_ping_pong_interval = KEEP_ALIVE_TIMEOUT;
+  info_.ka_time = TCP_KEEP_ALIVE;
+  info_.ka_probes = TCP_KEEP_ALIVE_PROBES;
+  info_.ka_interval = TCP_KEEP_ALIVE_INTERVAL;
+  info_.ws_ping_pong_interval = PING_PONG_INTERVAL;
 
   context_ = lws_create_context(&info_);
 }
