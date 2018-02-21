@@ -562,9 +562,11 @@ lws_create_vhost(struct lws_context *context,
 #endif
 	struct lws_protocols *lwsp;
 	int m, f = !info->pvo;
-#ifdef LWS_HAVE_GETENV
-	char *p;
-#endif
+// --twinlife-- 180221
+//#ifdef LWS_HAVE_GETENV
+//	char *p;
+//#endif
+// --twinlife-- 180221
 	int n;
 
 	if (!vh)
@@ -782,19 +784,21 @@ lws_create_vhost(struct lws_context *context,
 
 	/* either use proxy from info, or try get it from env var */
 
-	/* http proxy */
-	if (info->http_proxy_address) {
-		/* override for backwards compatibility */
-		if (info->http_proxy_port)
-			vh->http_proxy_port = info->http_proxy_port;
-		lws_set_proxy(vh, info->http_proxy_address);
-	} else {
-#ifdef LWS_HAVE_GETENV
-		p = getenv("http_proxy");
-		if (p)
-			lws_set_proxy(vh, p);
-#endif
-	}
+// --twinlife-- 180221
+//	/* http proxy */
+//	if (info->http_proxy_address) {
+//		/* override for backwards compatibility */
+//		if (info->http_proxy_port)
+//			vh->http_proxy_port = info->http_proxy_port;
+//		lws_set_proxy(vh, info->http_proxy_address);
+//	} else {
+//#ifdef LWS_HAVE_GETENV
+//		p = getenv("http_proxy");
+//		if (p)
+//			lws_set_proxy(vh, p);
+//#endif
+//	}
+// --twinlife-- 180221
 #if defined(LWS_WITH_SOCKS5)
 	/* socks proxy */
 	if (info->socks_proxy_address) {
