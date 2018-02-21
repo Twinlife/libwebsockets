@@ -61,7 +61,6 @@ static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* use
 }
 
 static void emit_log(int level, const char* msg) {
-
   if (level == LLL_NOTICE || level == LLL_INFO) {
     __android_log_write(ANDROID_LOG_INFO, "lws", msg);
   } else if (level == LLL_WARN) {
@@ -84,6 +83,7 @@ Container::Container(ObserverJni* observer) {
   info_.protocols = protocols;
   info_.gid = -1;
   info_.uid = -1;
+  info_.options |= LWS_SERVER_OPTION_EXPLICIT_VHOSTS;
   info_.options |= LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
   info_.ka_time = TCP_KEEP_ALIVE;
   info_.ka_probes = TCP_KEEP_ALIVE_PROBES;
@@ -102,7 +102,7 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
 						 const char* proxy_username, const char* proxy_password) {
 
   if (context_) {
-    struct lws_vhost* vhost = context_->vhost_list;
+    struct lws_vhost* vhost = lws_create_vhost(context_, &info_);
     if (vhost) {
       if (proxy_address && proxy_port != 0) {
 	vhost->http_proxy_port = proxy_port;
@@ -125,6 +125,7 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
       } else {
 	vhost->http_proxy_port = 0;
 	vhost->http_proxy_address[0] = '\0';
+	vhost->proxy_basic_auth_token[0] = '\0';
       }
     }
 
@@ -148,6 +149,7 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
     info_ws.ietf_version_or_minus_one = -1;
     info_ws.protocol = protocols[0].name;
     info_ws.userdata = userdata;
+    info_ws.vhost = vhost;
 
     lws_reference->wsi = lws_client_connect_via_info(&info_ws);
     return lws_reference;
