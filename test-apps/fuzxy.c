@@ -672,7 +672,6 @@ handle_accept(int n)
 			memset (&ai, 0, sizeof ai);
 			ai.ai_family = PF_UNSPEC;
 			ai.ai_socktype = SOCK_STREAM;
-			ai.ai_flags = AI_CANONNAME;
 
 			if (getaddrinfo(s->address, NULL, &ai, &result)) {
 				lwsl_notice("failed to lookup %s\n",
@@ -795,8 +794,7 @@ main(int argc, char **argv)
 			port_local = atoi(optarg);
 			break;
 		case 'i':
-			strncpy(interface_name, optarg, sizeof interface_name);
-			interface_name[(sizeof interface_name) - 1] = '\0';
+			lws_strncpy(interface_name, optarg, sizeof interface_name);
 			break;
 		case 'h':
 			fprintf(stderr, "Usage: libwebsockets-test-fuzxy "

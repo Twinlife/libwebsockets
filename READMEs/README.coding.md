@@ -389,10 +389,9 @@ external polling array.  That's needed if **libwebsockets** will
 cooperate with an existing poll array maintained by another
 server.
 
-Four callbacks `LWS_CALLBACK_ADD_POLL_FD`, `LWS_CALLBACK_DEL_POLL_FD`,
-`LWS_CALLBACK_SET_MODE_POLL_FD` and `LWS_CALLBACK_CLEAR_MODE_POLL_FD`
-appear in the callback for protocol 0 and allow interface code to
-manage socket descriptors in other poll loops.
+Three callbacks `LWS_CALLBACK_ADD_POLL_FD`, `LWS_CALLBACK_DEL_POLL_FD`
+and `LWS_CALLBACK_CHANGE_MODE_POLL_FD` appear in the callback for protocol 0
+and allow interface code to manage socket descriptors in other poll loops.
 
 You can pass all pollfds that need service to `lws_service_fd()`, even
 if the socket or file does not belong to **libwebsockets** it is safe.
@@ -900,35 +899,74 @@ You can set fd_limit_per_thread to a nonzero number to control this manually, eg
 the overall supported fd limit is less than the process allowance.
 
 You can control the context basic data allocation for multithreading from Cmake
-using -DLWS_MAX_SMP=, if not given it's set to 32.  The serv_buf allocation
+using -DLWS_MAX_SMP=, if not given it's set to 1.  The serv_buf allocation
 for the threads (currently 4096) is made at runtime only for active threads.
 
 Because lws will limit the requested number of actual threads supported
 according to LWS_MAX_SMP, there is an api lws_get_count_threads(context) to
 discover how many threads were actually allowed when the context was created.
 
-It's required to implement locking in the user code in the same way that
-libwebsockets-test-server-pthread does it, for the FD locking callbacks.
+See the test-server-pthreads.c sample for how to use.
 
-There is no knowledge or dependency in lws itself about pthreads.  How the
-locking is implemented is entirely up to the user code.
+@section smplocking SMP Locking Helpers
+
+Lws provide a set of pthread mutex helpers that reduce to no code or
+variable footprint in the case that LWS_MAX_SMP == 1.
+
+Define your user mutex like this
+
+```
+	lws_pthread_mutex(name);
+```
+
+If LWS_MAX_SMP > 1, this produces `pthread_mutex_t name;`.  In the case
+LWS_MAX_SMP == 1, it produces nothing.
+
+Likewise these helpers for init, destroy, lock and unlock
 
 
-@section libevuv Libev / Libuv support
+```
+	void lws_pthread_mutex_init(pthread_mutex_t *lock)
+	void lws_pthread_mutex_destroy(pthread_mutex_t *lock)
+	void lws_pthread_mutex_lock(pthread_mutex_t *lock)
+	void lws_pthread_mutex_unlock(pthread_mutex_t *lock)
+```
+
+resolve to nothing if LWS_MAX_SMP == 1, otherwise produce the equivalent
+pthread api.
+
+pthreads is required in lws only if LWS_MAX_SMP > 1.
+
+
+@section libevuv libev / libuv / libevent support
 
 You can select either or both
 
 	-DLWS_WITH_LIBEV=1
 	-DLWS_WITH_LIBUV=1
+	-DLWS_WITH_LIBEVENT=1
 
 at cmake configure-time.  The user application may use one of the
 context init options flags
 
 	LWS_SERVER_OPTION_LIBEV
 	LWS_SERVER_OPTION_LIBUV
+	LWS_SERVER_OPTION_LIBEVENT
 
-to indicate it will use either of the event libraries.
+to indicate it will use one of the event libraries at runtime.
 
+libev has some problems, its headers conflict with libevent, they both define
+critical constants like EV_READ to different values.  Attempts
+to discuss clearing that up with libevent and libev did not get anywhere useful.
+
+In addition building anything with libev using gcc spews warnings, the
+maintainer is aware of this for many years, and blames gcc.  We worked
+around this by disabling -Werror on the parts of lws that use libev.
+
+For these reasons and the response I got trying to raise these issues with
+them, if you have a choice about event loop, I would gently encourage you
+to avoid libev.  Where lws uses an event loop itself, eg in lwsws, we use
+libuv.
 
 @section extopts Extension option control from user code
 

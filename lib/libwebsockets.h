@@ -95,16 +95,8 @@ typedef unsigned long long lws_intptr_t;
 #define LWS_O_CREAT _O_CREAT
 #define LWS_O_TRUNC _O_TRUNC
 
-#if !defined(__MINGW32__) && (!defined(_MSC_VER) || _MSC_VER < 1900) /* Visual Studio 2015 already defines this in <stdio.h> */
-#define lws_snprintf _snprintf
-#endif
-
 #ifndef __func__
 #define __func__ __FUNCTION__
-#endif
-
-#if !defined(__MINGW32__) &&(!defined(_MSC_VER) || _MSC_VER < 1900) && !defined(snprintf)
-#define snprintf(buf,len, format,...) _snprintf_s(buf, len,len, format, __VA_ARGS__)
 #endif
 
 #else /* NOT WIN32 */
@@ -162,7 +154,7 @@ typedef unsigned long long lws_intptr_t;
 
 #endif
 
-#ifdef LWS_WITH_LIBEV
+#if defined(LWS_WITH_LIBEV)
 #include <ev.h>
 #endif /* LWS_WITH_LIBEV */
 #ifdef LWS_WITH_LIBUV
@@ -171,7 +163,7 @@ typedef unsigned long long lws_intptr_t;
 #include <uv-version.h>
 #endif
 #endif /* LWS_WITH_LIBUV */
-#ifdef LWS_WITH_LIBEVENT
+#if defined(LWS_WITH_LIBEVENT) && !defined(LWS_HIDE_LIBEVENT)
 #include <event2/event.h>
 #endif /* LWS_WITH_LIBEVENT */
 
@@ -213,6 +205,51 @@ typedef unsigned long long lws_intptr_t;
 #endif
 #endif
 #endif /* not USE_WOLFSSL */
+#endif
+
+/*
+ * Helpers for pthread mutex in user code... if lws is built for
+ * multiple service threads, these resolve to pthread mutex
+ * operations.  In the case LWS_MAX_SMP is 1 (the default), they
+ * are all NOPs and no pthread type or api is referenced.
+ */
+
+#if LWS_MAX_SMP > 1
+
+#include <pthread.h>
+
+#define lws_pthread_mutex(name) pthread_mutex_t name;
+
+static LWS_INLINE void
+lws_pthread_mutex_init(pthread_mutex_t *lock)
+{
+	pthread_mutex_init(lock, NULL);
+}
+
+static LWS_INLINE void
+lws_pthread_mutex_destroy(pthread_mutex_t *lock)
+{
+	pthread_mutex_destroy(lock);
+}
+
+static LWS_INLINE void
+lws_pthread_mutex_lock(pthread_mutex_t *lock)
+{
+	pthread_mutex_lock(lock);
+}
+
+static LWS_INLINE void
+lws_pthread_mutex_unlock(pthread_mutex_t *lock)
+{
+	pthread_mutex_unlock(lock);
+}
+
+#else
+#define lws_pthread_mutex(name)
+#define lws_pthread_mutex_init(_a)
+#define lws_pthread_mutex_destroy(_a)
+#define lws_pthread_mutex_lock(_a)
+#define lws_pthread_mutex_unlock(_a)
 #endif
 
 
@@ -310,10 +347,10 @@ lwsl_timestamp(int level, char *p, int len);
  * lwsl_hexdump() - helper to hexdump a buffer
  *
  * \param level: one of LLL_ constants
- * \param buf: buffer start to dump
+ * \param vbuf: buffer start to dump
  * \param len: length of buffer to dump
  *
- * If \p level is visible, does a nice hexdump -C style dump of \p buf for
+ * If \p level is visible, does a nice hexdump -C style dump of \p vbuf for
  * \p len bytes.  This can be extremely convenient while debugging.
  */
 LWS_VISIBLE LWS_EXTERN void
@@ -565,15 +602,14 @@ struct lws_esp32 {
 	char model[16];
 	char group[16];
 	char role[16];
-	char ssid[4][16];
-	char password[4][32];
-	char active_ssid[32];
+	char ssid[4][64];
+	char password[4][64];
+	char active_ssid[64];
 	char access_pw[16];
 	char hostname[32];
 	char mac[20];
 	char le_dns[64];
 	char le_email[64];
-	mdns_server_t *mdns;
        	char region;
        	char inet;
 	char conn_ap;
@@ -587,6 +623,7 @@ struct lws_esp32 {
 	int extant_group_members;
 
 	char acme;
+	char upload;
 
 	volatile char button_is_down;
 };
@@ -888,7 +925,11 @@ enum lws_callback_reasons {
 	LWS_CALLBACK_ESTABLISHED				=  0,
 	/**< (VH) after the server completes a handshake with an incoming
 	 * client.  If you built the library with ssl support, in is a
-	 * pointer to the ssl struct associated with the connection or NULL.*/
+	 * pointer to the ssl struct associated with the connection or NULL.
+	 *
+	 * b0 of len is set if the connection was made using ws-over-h2
+	 *
+	 * */
 	LWS_CALLBACK_CLIENT_CONNECTION_ERROR			=  1,
 	/**< the request client connection has been unable to complete a
 	 * handshake with the remote server.  If in is non-NULL, you can
@@ -1421,6 +1462,8 @@ enum lws_callback_reasons {
 	 * reported to the vhost in question here, including completion
 	 * and failure.  in points to optional JSON, and len represents the
 	 * connection state using enum lws_cert_update_state */
+	LWS_CALLBACK_CLIENT_CLOSED				=  75,
+	/**< when a client websocket session ends */
 
 	/****** add new things just above ---^ ******/
 
@@ -2309,6 +2352,17 @@ lws_adjust_protocol_psds(struct lws *wsi, size_t new_size);
 LWS_VISIBLE LWS_EXTERN int
 lws_finalize_startup(struct lws_context *context);
 
+/**
+ * lws_pvo_search() - helper to find a named pvo in a linked-list
+ *
+ * \param pvo:	the first pvo in the linked-list
+ * \param name: the name of the pvo to return if found
+ *
+ * Returns NULL, or a pointer to the name pvo in the linked-list
+ */
+LWS_VISIBLE LWS_EXTERN const struct lws_protocol_vhost_options *
+lws_pvo_search(const struct lws_protocol_vhost_options *pvo, const char *name);
+
 LWS_VISIBLE LWS_EXTERN int
 lws_protocol_init(struct lws_context *context);
 
@@ -2805,6 +2859,10 @@ struct lws_context_creation_info {
 	 *	      platform default values.
 	 *	      Just leave all at 0 if you don't care.
 	 */
+	const char *error_document_404;
+	/**< VHOST: If non-NULL, when asked to serve a non-existent file,
+	 *          lws attempts to server this url path instead.  Eg,
+	 *          "/404.html" */
 
 	/* Add new things just above here ---^
 	 * This is part of the ABI, don't needlessly break compatibility
@@ -3263,6 +3321,13 @@ struct lws_client_connect_info {
 	const char *iface;
 	/**< NULL to allow routing on any interface, or interface name or IP
 	 * to bind the socket to */
+	const char *local_protocol_name;
+	/**< NULL: .protocol is used both to select the local protocol handler
+	 *         to bind to and as the list of remote ws protocols we could
+	 *         accept.
+	 *   non-NULL: this protocol name is used to bind the connection to
+	 *             the local protocol handler.  .protocol is used for the
+	 *             list of remote ws protocols we could accept */
 
 	/* Add new things just above here ---^
 	 * This is part of the ABI, don't needlessly break compatibility
@@ -3396,6 +3461,10 @@ lws_http_client_read(struct lws *wsi, char **buf, int *len);
  * \param wsi: client connection
  *
  * Returns the last server response code, eg, 200 for client http connections.
+ *
+ * You should capture this during the LWS_CALLBACK_ESTABLISHED_CLIENT_HTTP
+ * callback, because after that the memory reserved for storing the related
+ * headers is freed and this value is lost.
  */
 LWS_VISIBLE LWS_EXTERN unsigned int
 lws_http_client_http_response(struct lws *wsi);
@@ -4324,7 +4393,7 @@ lws_plat_recommended_rsa_bits(void);
  */
 ///@{
 
-#ifdef LWS_WITH_LIBEV
+#if defined(LWS_WITH_LIBEV)
 typedef void (lws_ev_signal_cb_t)(EV_P_ struct ev_signal *w, int revents);
 
 LWS_VISIBLE LWS_EXTERN int
@@ -4383,7 +4452,7 @@ lws_close_all_handles_in_loop(uv_loop_t *loop);
  */
 ///@{
 
-#ifdef LWS_WITH_LIBEVENT
+#if defined(LWS_WITH_LIBEVENT) && !defined(LWS_HIDE_LIBEVENT)
 typedef void (lws_event_signal_cb_t) (evutil_socket_t sock_fd, short revents,
 		  void *ctx);
 
@@ -4517,9 +4586,6 @@ lws_timed_callback_vh_protocol(struct lws_vhost *vh,
 //@{
 #if !defined(LWS_SIZEOFPTR)
 #define LWS_SIZEOFPTR ((int)sizeof (void *))
-#endif
-#if !defined(u_int64_t)
-#define u_int64_t unsigned long long
 #endif
 
 #if defined(__x86_64__)
@@ -5272,6 +5338,19 @@ lws_interface_to_sa(int ipv6, const char *ifname, struct sockaddr_in *addr,
  */
 LWS_VISIBLE LWS_EXTERN int
 lws_snprintf(char *str, size_t size, const char *format, ...) LWS_FORMAT(3);
+
+/**
+ * lws_strncpy(): strncpy that guarantees NUL on truncated copy
+ *
+ * \param dest: destination buffer
+ * \param src: source buffer
+ * \param size: bytes left in destination buffer
+ *
+ * This lets you correctly truncate buffers by concatenating lengths, if you
+ * reach the limit the reported length doesn't exceed the limit.
+ */
+LWS_VISIBLE LWS_EXTERN char *
+lws_strncpy(char *dest, const char *src, size_t size);
 
 /**
  * lws_get_random(): fill a buffer with platform random data
@@ -6488,6 +6567,7 @@ struct lejp_ctx;
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(_x) (sizeof(_x) / sizeof(_x[0]))
 #endif
+#define LWS_ARRAY_SIZE(_x) (sizeof(_x) / sizeof(_x[0]))
 #define LEJP_FLAG_WS_KEEP 64
 #define LEJP_FLAG_WS_COMMENTLINE 32
 

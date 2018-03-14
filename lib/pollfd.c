@@ -63,7 +63,9 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 	assert(wsi->position_in_fds_table >= 0 &&
 	       wsi->position_in_fds_table < (int)pt->fds_count);
 
-#if !defined(LWS_WITH_LIBUV) && !defined(LWS_WITH_LIBEV) && !defined(LWS_WITH_LIBEVENT)
+#if !defined(LWS_WITH_LIBUV) && \
+    !defined(LWS_WITH_LIBEV) && \
+    !defined(LWS_WITH_LIBEVENT)
 	/*
 	 * This only applies when we use the default poll() event loop.
 	 *
@@ -198,29 +200,33 @@ bail:
 }
 
 #ifndef LWS_NO_SERVER
+/*
+ * Enable or disable listen sockets on this pt globally...
+ * it's modulated according to the pt having space for a new accept.
+ */
 static void
-lws_accept_modulation(struct lws_context_per_thread *pt, int allow)
+lws_accept_modulation(struct lws_context *context,
+		      struct lws_context_per_thread *pt, int allow)
 {
-// multithread listen seems broken
-#if 0
 	struct lws_vhost *vh = context->vhost_list;
 	struct lws_pollargs pa1;
 
 	while (vh) {
-		if (allow)
-			_lws_change_pollfd(pt->wsi_listening,
+		if (vh->lserv_wsi) {
+			if (allow)
+				_lws_change_pollfd(vh->lserv_wsi,
 					   0, LWS_POLLIN, &pa1);
-		else
-			_lws_change_pollfd(pt->wsi_listening,
+			else
+				_lws_change_pollfd(vh->lserv_wsi,
 					   LWS_POLLIN, 0, &pa1);
+		}
 		vh = vh->vhost_next;
 	}
-#endif
 }
 #endif
 
 int
-insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
+__insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 {
 	struct lws_pollargs pa = { wsi->desc.sockfd, LWS_POLLIN, 0 };
 	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
@@ -253,7 +259,6 @@ insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 					   wsi->user_space, (void *) &pa, 1))
 		return -1;
 
-	lws_pt_lock(pt);
 	pt->count_conns++;
 	insert_wsi(context, wsi);
 	wsi->position_in_fds_table = pt->fds_count;
@@ -276,9 +281,8 @@ insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 #ifndef LWS_NO_SERVER
 	/* if no more room, defeat accepts on this thread */
 	if ((unsigned int)pt->fds_count == context->fd_limit_per_thread - 1)
-		lws_accept_modulation(pt, 0);
+		lws_accept_modulation(context, pt, 0);
 #endif
-	lws_pt_unlock(pt);
 
 	if (wsi->vhost &&
 	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
@@ -289,7 +293,7 @@ insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 }
 
 int
-remove_wsi_socket_from_fds(struct lws *wsi)
+__remove_wsi_socket_from_fds(struct lws *wsi)
 {
 	struct lws_context *context = wsi->context;
 	struct lws_pollargs pa = { wsi->desc.sockfd, 0, 0 };
@@ -326,8 +330,6 @@ remove_wsi_socket_from_fds(struct lws *wsi)
 	lws_libuv_io(wsi, LWS_EV_STOP | LWS_EV_READ | LWS_EV_WRITE |
 			  LWS_EV_PREPARE_DELETION);
 
-	lws_pt_lock(pt);
-
 	lwsl_debug("%s: wsi=%p, sock=%d, fds pos=%d, end guy pos=%d, endfd=%d\n",
 		  __func__, wsi, wsi->desc.sockfd, wsi->position_in_fds_table,
 		  pt->fds_count, pt->fds[pt->fds_count].fd);
@@ -361,9 +363,8 @@ remove_wsi_socket_from_fds(struct lws *wsi)
 	if (!context->being_destroyed &&
 	    /* if this made some room, accept connects on this thread */
 	    (unsigned int)pt->fds_count < context->fd_limit_per_thread - 1)
-		lws_accept_modulation(pt, 1);
+		lws_accept_modulation(context, pt, 1);
 #endif
-	lws_pt_unlock(pt);
 
 	if (wsi->vhost &&
 	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
@@ -374,9 +375,8 @@ remove_wsi_socket_from_fds(struct lws *wsi)
 }
 
 int
-lws_change_pollfd(struct lws *wsi, int _and, int _or)
+__lws_change_pollfd(struct lws *wsi, int _and, int _or)
 {
-	struct lws_context_per_thread *pt;
 	struct lws_context *context;
 	struct lws_pollargs pa;
 	int ret = 0;
@@ -394,15 +394,26 @@ lws_change_pollfd(struct lws *wsi, int _and, int _or)
 					      wsi->user_space, (void *) &pa, 0))
 		return -1;
 
-	pt = &context->pt[(int)wsi->tsi];
-
-	lws_pt_lock(pt);
 	ret = _lws_change_pollfd(wsi, _and, _or, &pa);
-	lws_pt_unlock(pt);
 	if (wsi->vhost &&
 	    wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_UNLOCK_POLL,
 					   wsi->user_space, (void *) &pa, 0))
 		ret = -1;
+
+	return ret;
+}
+
+int
+lws_change_pollfd(struct lws *wsi, int _and, int _or)
+{
+	struct lws_context_per_thread *pt;
+	int ret = 0;
+
+	pt = &wsi->context->pt[(int)wsi->tsi];
+
+	lws_pt_lock(pt, __func__);
+	ret = __lws_change_pollfd(wsi, _and, _or);
+	lws_pt_unlock(pt);
 
 	return ret;
 }
@@ -451,7 +462,7 @@ lws_callback_on_writable(struct lws *wsi)
 #endif
 
 #ifdef LWS_WITH_HTTP2
-	lwsl_info("%s: %p\n", __func__, wsi);
+	lwsl_info("%s: %p (mode %d)\n", __func__, wsi, wsi->mode);
 
 	if (wsi->mode != LWSCM_HTTP2_SERVING &&
 	    wsi->mode != LWSCM_HTTP2_WS_SERVING)
@@ -509,11 +520,12 @@ network_sock:
 		return -1;
 	}
 
-	if (lws_change_pollfd(wsi, 0, LWS_POLLOUT))
+	if (__lws_change_pollfd(wsi, 0, LWS_POLLOUT))
 		return -1;
 
 	return 1;
 }
+
 
 /*
  * stitch protocol choice into the vh protocol linked list
@@ -532,6 +544,8 @@ lws_same_vh_protocol_insert(struct lws *wsi, int n)
 		lwsl_notice("Attempted to attach wsi twice to same vh prot\n");
 	}
 
+	lws_vhost_lock(wsi->vhost);
+
 	wsi->same_vh_protocol_prev = &wsi->vhost->same_vh_protocol_list[n];
 	/* old first guy is our next */
 	wsi->same_vh_protocol_next =  wsi->vhost->same_vh_protocol_list[n];
@@ -542,6 +556,10 @@ lws_same_vh_protocol_insert(struct lws *wsi, int n)
 		/* old first guy points back to us now */
 		wsi->same_vh_protocol_next->same_vh_protocol_prev =
 				&wsi->same_vh_protocol_next;
+
+	wsi->on_same_vh_list = 1;
+
+	lws_vhost_unlock(wsi->vhost);
 }
 
 void
@@ -556,6 +574,11 @@ lws_same_vh_protocol_remove(struct lws *wsi)
 	 */
 	lwsl_info("%s: removing same prot wsi %p\n", __func__, wsi);
 
+	if (!wsi->vhost || !wsi->on_same_vh_list)
+		return;
+
+	lws_vhost_lock(wsi->vhost);
+
 	if (wsi->same_vh_protocol_prev) {
 		assert (*(wsi->same_vh_protocol_prev) == wsi);
 		lwsl_info("have prev %p, setting him to our next %p\n",
@@ -567,13 +590,15 @@ lws_same_vh_protocol_remove(struct lws *wsi)
 	}
 
 	/* our next should point back to our prev */
-	if (wsi->same_vh_protocol_next) {
+	if (wsi->same_vh_protocol_next)
 		wsi->same_vh_protocol_next->same_vh_protocol_prev =
 				wsi->same_vh_protocol_prev;
-	}
 
 	wsi->same_vh_protocol_prev = NULL;
 	wsi->same_vh_protocol_next = NULL;
+	wsi->on_same_vh_list = 0;
+
+	lws_vhost_unlock(wsi->vhost);
 }
 
 

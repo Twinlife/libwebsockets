@@ -127,7 +127,7 @@ test_server_fops_open(const struct lws_plat_file_ops *fops,
 	/* call through to original platform implementation */
 	n = fops_plat.open(fops, vfs_path, vpath, flags);
 
-	lwsl_notice("%s: opening %s, ret %p\n", __func__, vfs_path, n);
+	lwsl_debug("%s: opening %s, ret %p\n", __func__, vfs_path, n);
 
 	return n;
 }
@@ -163,7 +163,6 @@ static struct option options[] = {
 	{ "allow-non-ssl",	no_argument,	NULL, 'a' },
 	{ "interface",  required_argument,	NULL, 'i' },
 	{ "closetest",  no_argument,		NULL, 'c' },
-	{ "libev",  no_argument,		NULL, 'e' },
 #ifndef LWS_NO_DAEMONIZE
 	{ "daemonize", 	no_argument,		NULL, 'D' },
 #endif
@@ -200,13 +199,10 @@ int main(int argc, char **argv)
 	info.port = 7681;
 
 	while (n >= 0) {
-		n = getopt_long(argc, argv, "eci:hsap:d:Dr:", options, NULL);
+		n = getopt_long(argc, argv, "ci:hsap:d:Dr:", options, NULL);
 		if (n < 0)
 			continue;
 		switch (n) {
-		case 'e':
-			opts |= LWS_SERVER_OPTION_LIBEV;
-			break;
 #ifndef LWS_NO_DAEMONIZE
 		case 'D':
 			daemonize = 1;
@@ -228,8 +224,7 @@ int main(int argc, char **argv)
 			info.port = atoi(optarg);
 			break;
 		case 'i':
-			strncpy(interface_name, optarg, sizeof interface_name);
-			interface_name[(sizeof interface_name) - 1] = '\0';
+			lws_strncpy(interface_name, optarg, sizeof interface_name);
 			iface = interface_name;
 			break;
 		case 'c':

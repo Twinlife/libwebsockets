@@ -161,10 +161,12 @@ lws_server_socket_service_ssl(struct lws *wsi, lws_sockfd_type accept_fd)
 		else
 			wsi->mode = LWSCM_SSL_ACK_PENDING_RAW;
 
-		if (insert_wsi_socket_into_fds(context, wsi)) {
+		lws_pt_lock(pt, __func__);
+		if (__insert_wsi_socket_into_fds(context, wsi)) {
 			lwsl_err("%s: failed to insert into fds\n", __func__);
 			goto fail;
 		}
+		lws_pt_unlock(pt);
 
 		lws_set_timeout(wsi, PENDING_TIMEOUT_SSL_ACCEPT,
 				context->timeout_secs);
@@ -207,18 +209,25 @@ lws_server_socket_service_ssl(struct lws *wsi, lws_sockfd_type accept_fd)
 				wsi->use_ssl = 0;
 
 				lws_tls_server_abort_connection(wsi);
+				/*
+				 * care... this creates wsi with no ssl
+				 * when ssl is enabled and normally
+				 * mandatory
+				 */
 				wsi->ssl = NULL;
 				if (lws_check_opt(context->options,
 				    LWS_SERVER_OPTION_REDIRECT_HTTP_TO_HTTPS))
 					wsi->redirect_to_https = 1;
+				lwsl_debug("accepted as non-ssl\n");
 				goto accepted;
 			}
-			if (!n) /*
-				 * connection is gone, or nothing to read
-				 * if it's gone, we will timeout on
-				 * PENDING_TIMEOUT_SSL_ACCEPT
+			if (!n) {
+				/*
+				 * connection is gone, fail out
 				 */
-				break;
+				lwsl_debug("PEEKed 0\n");
+				goto fail;
+			}
 			if (n < 0 && (LWS_ERRNO == LWS_EAGAIN ||
 				      LWS_ERRNO == LWS_EWOULDBLOCK)) {
 				/*
@@ -259,6 +268,7 @@ lws_server_socket_service_ssl(struct lws *wsi, lws_sockfd_type accept_fd)
 					      LWSSTATS_C_SSL_CONNECTIONS_FAILED, 1);
 	                lwsl_info("SSL_accept failed socket %u: %d\n",
 	                		wsi->desc.sockfd, n);
+			wsi->socket_is_permanently_unusable = 1;
 			goto fail;
 
 		default: /* MORE_SERVICE */
@@ -279,7 +289,7 @@ accepted:
 		/* adapt our vhost to match the SNI SSL_CTX that was chosen */
 		vh = context->vhost_list;
 		while (vh) {
-			if (!vh->being_destroyed &&
+			if (!vh->being_destroyed && wsi->ssl &&
 			    vh->ssl_ctx == lws_tls_ctx_from_wsi(wsi)) {
 				lwsl_info("setting wsi to vh %s\n", vh->name);
 				wsi->vhost = vh;

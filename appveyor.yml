@@ -48,15 +48,30 @@ build_script:
 after_build:
   - cd %APPVEYOR_BUILD_FOLDER%
   - mkdir staging
+  - mkdir staging\include
   - cp -r %APPVEYOR_BUILD_FOLDER%\build\bin %APPVEYOR_BUILD_FOLDER%\build\lib staging
   - if EXIST staging\bin\share mv staging\bin\share staging
   - if NOT EXIST staging\share\libwebsockets-test-server mkdir staging\share\libwebsockets-test-server
   - IF EXIST %APPVEYOR_BUILD_FOLDER%\build\libwebsockets-test-server.pem cp %APPVEYOR_BUILD_FOLDER%\build\libwebsockets-test-server.pem staging\share\libwebsockets-test-server
   - IF EXIST %APPVEYOR_BUILD_FOLDER%\build\libwebsockets-test-server.key.pem cp %APPVEYOR_BUILD_FOLDER%\build\libwebsockets-test-server.key.pem staging\share\libwebsockets-test-server
-  - 7z a build\lws-%LWS_METHOD%.zip %APPVEYOR_BUILD_FOLDER%\staging\*
+  - IF EXIST %APPVEYOR_BUILD_FOLDER%\build\lws_config.h cp %APPVEYOR_BUILD_FOLDER%\build\lws_config.h staging\include
+  - cp %APPVEYOR_BUILD_FOLDER%\lib\libwebsockets.h staging\include
+  - 7z a build\lws-%LWS_METHOD%-%APPVEYOR_BUILD_ID%.zip %APPVEYOR_BUILD_FOLDER%\staging\*
 
 artifacts:
-  - path: build\lws-%LWS_METHOD%.zip
+  - path: build\lws-%LWS_METHOD%-%APPVEYOR_BUILD_ID%.zip
+
+deploy:
+- provider: BinTray
+  username: lws-team
+  api_key:
+    secure: nDpZ7P/wrk98DwJPMC6KpCC23QrVP8f3RxvKzBaqOmb9LiVrg1IyO1cc5vcgShZC
+  subject: lws-team
+  repo: libwebsockets
+  package: windows
+  publish: true
+  override: true
+  explode: false
 
 matrix:
   fast_finish: true

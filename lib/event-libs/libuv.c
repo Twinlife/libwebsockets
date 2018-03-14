@@ -461,7 +461,7 @@ lws_libuv_stop(struct lws_context *context)
 			if (!wsi)
 				continue;
 			lws_close_free_wsi(wsi,
-				LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY
+				LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY, __func__
 				/* no protocol close */);
 			n--;
 		}
@@ -487,6 +487,7 @@ lws_libuv_closewsi(uv_handle_t* handle)
 	struct lws *n = NULL, *wsi = (struct lws *)(((char *)handle) -
 			  (char *)(&n->w_read.uv_watcher));
 	struct lws_context *context = lws_get_context(wsi);
+	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
 	int lspd = 0;
 
 	if (wsi->mode == LWSCM_SERVER_LISTENER &&
@@ -497,7 +498,9 @@ lws_libuv_closewsi(uv_handle_t* handle)
 			lspd = 2;
 	}
 
-	lws_close_free_wsi_final(wsi);
+	lws_pt_lock(pt, __func__);
+	__lws_close_free_wsi_final(wsi);
+	lws_pt_unlock(pt);
 
 	if (lspd == 2 && context->deprecation_cb) {
 		lwsl_notice("calling deprecation callback\n");
@@ -632,8 +635,7 @@ lws_plat_plugins_init(struct lws_context *context, const char * const *d)
 			}
 			plugin->list = context->plugin_list;
 			context->plugin_list = plugin;
-			strncpy(plugin->name, dent.name, sizeof(plugin->name) - 1);
-			plugin->name[sizeof(plugin->name) - 1] = '\0';
+			lws_strncpy(plugin->name, dent.name, sizeof(plugin->name) - 1);
 			plugin->lib = lib;
 			plugin->caps = lcaps;
 			context->plugin_protocol_count += lcaps.count_protocols;
