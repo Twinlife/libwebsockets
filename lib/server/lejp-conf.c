@@ -101,6 +101,7 @@ static const char * const paths_vhosts[] = {
 	"vhosts[].onlyraw",
 	"vhosts[].client-cert-required",
 	"vhosts[].ignore-missing-cert",
+	"vhosts[].error-document-404",
 };
 
 enum lejp_vhost_paths {
@@ -150,6 +151,7 @@ enum lejp_vhost_paths {
 	LEJPVP_FLAG_ONLYRAW,
 	LEJPVP_FLAG_CLIENT_CERT_REQUIRED,
 	LEJPVP_IGNORE_MISSING_CERT,
+	LEJPVP_ERROR_DOCUMENT_404,
 };
 
 static const char * const parser_errs[] = {
@@ -708,6 +710,10 @@ lejp_vhosts_cb(struct lejp_ctx *ctx, char reason)
 
 		return 0;
 
+	case LEJPVP_ERROR_DOCUMENT_404:
+		a->info->error_document_404 = a->p;
+		break;
+
 	case LEJPVP_SSL_OPTION_SET:
 		a->info->ssl_options_set |= atol(ctx->buf);
 		return 0;
@@ -726,7 +732,7 @@ dostring:
 		n = p1 - p;
 		if (n > a->end - a->p)
 			n = a->end - a->p;
-		strncpy(a->p, p, n);
+		lws_strncpy(a->p, p, n + 1);
 		a->p += n;
 		a->p += lws_snprintf(a->p, a->end - a->p, "%s", LWS_INSTALL_DATADIR);
 		p += n + strlen(ESC_INSTALL_DATADIR);

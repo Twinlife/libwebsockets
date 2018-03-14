@@ -20,7 +20,6 @@ lws_getaddrinfo46(struct lws *wsi, const char *ads, struct addrinfo **result)
 	{
 		hints.ai_family = PF_UNSPEC;
 		hints.ai_socktype = SOCK_STREAM;
-		hints.ai_flags = AI_CANONNAME;
 	}
 
 	return getaddrinfo(ads, NULL, &hints, result);
@@ -104,7 +103,7 @@ lws_client_connect_2(struct lws *wsi)
 	 * to whatever we decided to connect to
 	 */
 
-       lwsl_notice("%s: %p: address %s\n", __func__, wsi, ads);
+       lwsl_info("%s: %p: address %s\n", __func__, wsi, ads);
 
        n = lws_getaddrinfo46(wsi, ads, &result);
 
@@ -246,7 +245,7 @@ lws_client_connect_2(struct lws *wsi)
 		lws_libuv_accept(wsi, wsi->desc);
 		lws_libevent_accept(wsi, wsi->desc);
 
-		if (insert_wsi_socket_into_fds(context, wsi)) {
+		if (__insert_wsi_socket_into_fds(context, wsi)) {
 			compatible_close(wsi->desc.sockfd);
 			cce = "insert wsi failed";
 			goto oom4;
@@ -414,7 +413,7 @@ oom4:
 	if (wsi->mode == LWSCM_HTTP_CLIENT ||
 	    wsi->mode == LWSCM_HTTP_CLIENT_ACCEPTED ||
 	    wsi->mode == LWSCM_WSCL_WAITING_CONNECT) {
-		wsi->vhost->protocols[0].callback(wsi,
+		wsi->protocol->callback(wsi,
 			LWS_CALLBACK_CLIENT_CONNECTION_ERROR,
 			wsi->user_space, (void *)cce, strlen(cce));
 		wsi->already_did_cce = 1;
@@ -424,17 +423,18 @@ oom4:
 		goto failed1;
 	lws_remove_from_timeout_list(wsi);
 	lws_header_table_detach(wsi, 0);
+	lws_client_stash_destroy(wsi);
 	lws_free(wsi);
 
 	return NULL;
 
 failed:
-	wsi->vhost->protocols[0].callback(wsi,
+	wsi->protocol->callback(wsi,
 		LWS_CALLBACK_CLIENT_CONNECTION_ERROR,
 		wsi->user_space, (void *)cce, strlen(cce));
 	wsi->already_did_cce = 1;
 failed1:
-	lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
+	lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "client_connect2");
 
 	return NULL;
 }
@@ -463,19 +463,19 @@ lws_client_reset(struct lws **pwsi, int ssl, const char *address, int port,
 
 	p = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_ORIGIN);
 	if (p)
-		strncpy(origin, p, sizeof(origin) - 1);
+		lws_strncpy(origin, p, sizeof(origin) - 1);
 
 	p = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_SENT_PROTOCOLS);
 	if (p)
-		strncpy(protocol, p, sizeof(protocol) - 1);
+		lws_strncpy(protocol, p, sizeof(protocol) - 1);
 
 	p = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_METHOD);
 	if (p)
-		strncpy(method, p, sizeof(method) - 1);
+		lws_strncpy(method, p, sizeof(method) - 1);
 
 	p = lws_hdr_simple_ptr(wsi, _WSI_TOKEN_CLIENT_IFACE);
 	if (p)
-		strncpy(method, p, sizeof(iface) - 1);
+		lws_strncpy(method, p, sizeof(iface) - 1);
 
 	lwsl_info("redirect ads='%s', port=%d, path='%s', ssl = %d\n",
 		   address, port, path, ssl);
@@ -502,7 +502,7 @@ lws_client_reset(struct lws **pwsi, int ssl, const char *address, int port,
 	compatible_close(wsi->desc.sockfd);
 #endif
 
-	remove_wsi_socket_from_fds(wsi);
+	__remove_wsi_socket_from_fds(wsi);
 
 #ifdef LWS_OPENSSL_SUPPORT
 	wsi->use_ssl = ssl;
@@ -717,12 +717,20 @@ lws_client_connect_via_info(struct lws_client_connect_info *i)
 	struct lws *wsi;
 	int v = SPEC_LATEST_SUPPORTED;
 	const struct lws_protocols *p;
+	const char *local = i->protocol;
 
 	if (i->context->requested_kill)
 		return NULL;
 
 	if (!i->context->protocol_init_done)
 		lws_protocol_init(i->context);
+	/*
+	 * If we have .local_protocol_name, use it to select the
+	 * local protocol handler to bind to.  Otherwise use .protocol if
+	 * http[s].
+	 */
+	if (i->local_protocol_name)
+		local = i->local_protocol_name;
 
 	wsi = lws_zalloc(sizeof(struct lws), "client wsi");
 	if (wsi == NULL)
@@ -765,10 +773,19 @@ lws_client_connect_via_info(struct lws_client_connect_info *i)
 
 	wsi->protocol = &wsi->vhost->protocols[0];
 
-	/* for http[s] connection, allow protocol selection by name */
-
-	if (i->method && i->vhost && i->protocol) {
-		p = lws_vhost_name_to_protocol(i->vhost, i->protocol);
+	/*
+	 * 1) for http[s] connection, allow protocol selection by name
+	 * 2) for ws[s], if local_protocol_name given also use it for
+	 *    local protocol binding... this defeats the server
+	 *    protocol negotiation if so
+	 *
+	 * Otherwise leave at protocols[0]... the server will tell us
+	 * which protocol we are associated with since we can give it a
+	 * list.
+	 */
+	if ((i->method || i->local_protocol_name) && wsi->vhost && local) {
+		lwsl_info("binding to %s\n", local);
+		p = lws_vhost_name_to_protocol(wsi->vhost, local);
 		if (p)
 			wsi->protocol = p;
 	}
@@ -1040,13 +1057,13 @@ void socks_generate_msg(struct lws *wsi, enum socks_msg_type type,
 		/* length of the user name */
 		pt->serv_buf[len++] = n;
 		/* user name */
-		strncpy((char *)&pt->serv_buf[len], wsi->vhost->socks_user,
+		lws_strncpy((char *)&pt->serv_buf[len], wsi->vhost->socks_user,
 			context->pt_serv_buf_size - len);
 		len += n;
 		/* length of the password */
 		pt->serv_buf[len++] = passwd_len;
 		/* password */
-		strncpy((char *)&pt->serv_buf[len], wsi->vhost->socks_password,
+		lws_strncpy((char *)&pt->serv_buf[len], wsi->vhost->socks_password,
 			context->pt_serv_buf_size - len);
 		len += passwd_len;
 		break;
@@ -1066,7 +1083,7 @@ void socks_generate_msg(struct lws *wsi, enum socks_msg_type type,
 		n = len++;
 
 		/* the address we tell SOCKS proxy to connect to */
-		strncpy((char *)&(pt->serv_buf[len]), wsi->stash->address,
+		lws_strncpy((char *)&(pt->serv_buf[len]), wsi->stash->address,
 			context->pt_serv_buf_size - len);
 		len += strlen(wsi->stash->address);
 		net_num = htons(wsi->c_port);

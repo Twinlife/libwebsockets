@@ -174,6 +174,9 @@ scan_start(struct per_vhost_data__esplws_scan *vhd)
 	if (lws_esp32.acme)
 		return;
 
+	if (lws_esp32.upload)
+		return;
+
 	vhd->scan_ongoing = 1;
 	lws_esp32.scan_consumer = scan_finished;
 	lws_esp32.scan_consumer_arg = vhd;
@@ -182,15 +185,23 @@ scan_start(struct per_vhost_data__esplws_scan *vhd)
 		lwsl_err("scan start failed %d\n", n);
 }
 
-static char scan_defer;
+static int  scan_defer;
 
 static void timer_cb(TimerHandle_t t)
 {
 	struct per_vhost_data__esplws_scan *vhd = pvTimerGetTimerID(t);
 
-	if (!lws_esp32.inet && (scan_defer & 1)) {
-		/* if connected in AP mode, wait twice as long between scans */
-		return;
+//	if (!lws_esp32.inet && ((scan_defer++) & 1))
+/*
+ * AP mode + scan does not work well on ESP32... if we didn't connect to an AP
+ * ourselves, just scan once at boot.  Then leave us on the AP channel.
+ *
+ * Do the callback for everyone to keep the heartbeat alive.
+ */
+	if (!lws_esp32.inet && scan_defer++) {
+		 lws_callback_on_writable_all_protocol(vhd->context, vhd->protocol);
+
+		 return;
 	}
 
 	scan_start(vhd);
@@ -363,8 +374,7 @@ scan_finished(uint16_t count, wifi_ap_record_t *recs, void *v)
 		lws.rssi = r->rssi;
 		lws.count = 1;
 		memcpy(&lws.bssid, r->bssid, 6);
-		strncpy(lws.ssid, (const char *)r->ssid, sizeof(lws.ssid) - 1);
-		lws.ssid[sizeof(lws.ssid) - 1] = '\0';
+		lws_strncpy(lws.ssid, (const char *)r->ssid, sizeof(lws.ssid) - 1);
 
 		lws_wifi_scan_insert_trim(&vhd->known_aps_list, &lws);
 	}
@@ -397,7 +407,7 @@ file_upload_cb(void *data, const char *name, const char *filename,
 			return -1;
 
 		lwsl_notice("LWS_UFS_OPEN Filename %s\n", filename);
-		strncpy(pss->filename, filename, sizeof(pss->filename) - 1);
+		lws_strncpy(pss->filename, filename, sizeof(pss->filename) - 1);
 		if (!strcmp(name, "pub") || !strcmp(name, "pri")) {
 			if (nvs_open("lws-station", NVS_READWRITE, &pss->nvh))
 				return 1;
@@ -556,7 +566,7 @@ callback_esplws_scan(struct lws *wsi, enum lws_callback_reasons reason,
 				lws_tls_vhost_cert_info(vhd->vhost,
 					LWS_TLS_CERT_INFO_COMMON_NAME, &ir,
 						sizeof(ir.ns.name));
-				strncpy(subject, ir.ns.name, sizeof(subject) - 1);
+				lws_strncpy(subject, ir.ns.name, sizeof(subject) - 1);
 
 				ir.ns.name[0] = '\0';
 				lws_tls_vhost_cert_info(vhd->vhost,
@@ -674,7 +684,7 @@ callback_esplws_scan(struct lws *wsi, enum lws_callback_reasons reason,
 			}
 
 			for (m = 0; m < 4; m++) {
-				char name[10], ssid[32];
+				char name[10], ssid[65];
 				unsigned int pp = 0, use = 0;
 
 				if (m)
@@ -774,8 +784,7 @@ issue:
 		lwsl_notice("LWS_CALLBACK_VHOST_CERT_UPDATE: %d\n", (int)len);
 		vhd->acme_state = (int)len;
 		if (in) {
-			strncpy(vhd->acme_msg, in, sizeof(vhd->acme_msg) - 1);
-			vhd->acme_msg[sizeof(vhd->acme_msg) - 1] = '\0';
+			lws_strncpy(vhd->acme_msg, in, sizeof(vhd->acme_msg) - 1);
 			lwsl_notice("acme_msg: %s\n", (char *)in);
 		}
 		lws_callback_on_writable_all_protocol_vhost(vhd->vhost, vhd->protocol);
@@ -832,20 +841,15 @@ issue:
 
 				if (si != -1 && n < 8) {
 					if (!(n & 1)) {
-						strncpy(lws_esp32.ssid[(n >> 1) & 3], p,
+						lws_strncpy(lws_esp32.ssid[(n >> 1) & 3], p,
 								sizeof(lws_esp32.ssid[0]));
-						lws_esp32.ssid[(n >> 1) & 3]
-							[sizeof(lws_esp32.ssid[0]) - 1] = '\0';
 						lws_snprintf(use, sizeof(use) - 1, "%duse", si);
 						lwsl_notice("resetting %s to 0\n", use);
 						nvs_set_u32(nvh, use, 0);
 
-					} else {
-						strncpy(lws_esp32.password[(n >> 1) & 3], p,
+					} else
+						lws_strncpy(lws_esp32.password[(n >> 1) & 3], p,
 								sizeof(lws_esp32.password[0]));
-						lws_esp32.password[(n >> 1) & 3]
-							[sizeof(lws_esp32.password[0]) - 1] = '\0';
-					}
 				}
 
 			}

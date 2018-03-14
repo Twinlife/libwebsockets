@@ -310,7 +310,7 @@ start_ws_handshake:
 				return 0;
 
 			lwsl_err("Failed to generate handshake for client\n");
-			lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
+			lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "chs");
 			return 0;
 		}
 
@@ -323,7 +323,7 @@ start_ws_handshake:
 		switch (n) {
 		case LWS_SSL_CAPABLE_ERROR:
 			lwsl_debug("ERROR writing to client socket\n");
-			lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
+			lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "cws");
 			return 0;
 		case LWS_SSL_CAPABLE_MORE_SERVICE:
 			lws_callback_on_writable(wsi);
@@ -393,6 +393,8 @@ client_http_body_sent:
 		len = 1;
 		while (wsi->ah->parser_state != WSI_PARSING_COMPLETE &&
 		       len > 0) {
+			int plen = 1;
+
 			n = lws_ssl_capable_read(wsi, &c, 1);
 			lws_latency(context, wsi, "send lws_issue_raw", n,
 				    n == 1);
@@ -405,7 +407,7 @@ client_http_body_sent:
 				return 0;
 			}
 
-			if (lws_parse(wsi, c)) {
+			if (lws_parse(wsi, &c, &plen)) {
 				lwsl_warn("problems parsing header\n");
 				goto bail3;
 			}
@@ -434,7 +436,7 @@ bail3:
 			LWS_CALLBACK_CLIENT_CONNECTION_ERROR,
 			wsi->user_space, (void *)cce, cce ? strlen(cce) : 0);
 		wsi->already_did_cce = 1;
-		lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
+		lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "cbail3");
 		return -1;
 
 	case LWSCM_WSCL_WAITING_EXTENSION_CONNECT:
@@ -642,16 +644,14 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 			port = wsi->c_port;
 			/* +1 as lws_client_reset expects leading / omitted */
 			path = new_path + 1;
-			strncpy(new_path, lws_hdr_simple_ptr(wsi,
+			lws_strncpy(new_path, lws_hdr_simple_ptr(wsi,
 							 _WSI_TOKEN_CLIENT_URI),
 							 sizeof(new_path));
-			new_path[sizeof(new_path) - 1] = '\0';
 			q = strrchr(new_path, '/');
-			if (q) {
-				strncpy(q + 1, p, sizeof(new_path) -
+			if (q)
+				lws_strncpy(q + 1, p, sizeof(new_path) -
 							(q - new_path) - 1);
-				new_path[sizeof(new_path) - 1] = '\0';
-			} else
+			else
 				path = p;
 		}
 
@@ -757,9 +757,10 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 		return 0;
 	}
 
-	if (lws_hdr_total_length(wsi, WSI_TOKEN_ACCEPT) == 0) {
-		lwsl_info("no ACCEPT\n");
-		cce = "HS: ACCEPT missing";
+	if (p && !strncmp(p, "401", 3)) {
+		lwsl_warn(
+		       "lws_client_handshake: got bad HTTP response '%s'\n", p);
+		cce = "HS: ws upgrade unauthorized";
 		goto bail3;
 	}
 
@@ -767,6 +768,12 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 		lwsl_warn(
 		       "lws_client_handshake: got bad HTTP response '%s'\n", p);
 		cce = "HS: ws upgrade response not 101";
+		goto bail3;
+	}
+
+	if (lws_hdr_total_length(wsi, WSI_TOKEN_ACCEPT) == 0) {
+		lwsl_info("no ACCEPT\n");
+		cce = "HS: ACCEPT missing";
 		goto bail3;
 	}
 
@@ -810,7 +817,7 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 
 	len = lws_hdr_total_length(wsi, WSI_TOKEN_PROTOCOL);
 	if (!len) {
-		lwsl_info("lws_client_int_s_hs: WSI_TOKEN_PROTOCOL is null\n");
+		lwsl_info("%s: WSI_TOKEN_PROTOCOL is null\n", __func__);
 		/*
 		 * no protocol name to work from,
 		 * default to first protocol
@@ -836,7 +843,7 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 	}
 
 	if (!okay) {
-		lwsl_err("lws_client_int_s_hs: got bad protocol %s\n", p);
+		lwsl_info("%s: got bad protocol %s\n", __func__, p);
 		cce = "HS: PROTOCOL malformed";
 		goto bail2;
 	}
@@ -845,20 +852,46 @@ lws_client_interpret_server_handshake(struct lws *wsi)
 	 * identify the selected protocol struct and set it
 	 */
 	n = 0;
-	wsi->protocol = NULL;
-	while (wsi->vhost->protocols[n].callback && !wsi->protocol) {
-		if (strcmp(p, wsi->vhost->protocols[n].name) == 0) {
+	/* keep client connection pre-bound protocol */
+	if (!(wsi->mode & LWSCM_FLAG_IMPLIES_CALLBACK_CLOSED_CLIENT_HTTP))
+		wsi->protocol = NULL;
+
+	while (wsi->vhost->protocols[n].callback) {
+		if (!wsi->protocol &&
+		    strcmp(p, wsi->vhost->protocols[n].name) == 0) {
 			wsi->protocol = &wsi->vhost->protocols[n];
 			break;
 		}
 		n++;
 	}
 
-	if (wsi->protocol == NULL) {
-		lwsl_err("lws_client_int_s_hs: fail protocol %s\n", p);
-		cce = "HS: Cannot match protocol";
-		goto bail2;
+	if (!wsi->vhost->protocols[n].callback) { /* no match */
+		/* if server, that's already fatal */
+		if (!(wsi->mode & LWSCM_FLAG_IMPLIES_CALLBACK_CLOSED_CLIENT_HTTP)) {
+			lwsl_info("%s: fail protocol %s\n", __func__, p);
+			cce = "HS: Cannot match protocol";
+			goto bail2;
+		}
+
+		/* for client, find the index of our pre-bound protocol */
+
+		n = 0;
+		while (wsi->vhost->protocols[n].callback) {
+			if (strcmp(wsi->protocol->name,
+				   wsi->vhost->protocols[n].name) == 0) {
+				wsi->protocol = &wsi->vhost->protocols[n];
+				break;
+			}
+			n++;
+		}
+
+		if (!wsi->vhost->protocols[n].callback) {
+			lwsl_err("Failed to match protocol %s\n", wsi->protocol->name);
+			goto bail2;
+		}
 	}
+
+	lwsl_debug("Selected protocol %s\n", wsi->protocol->name);
 
 check_extensions:
 	/*
@@ -868,6 +901,9 @@ check_extensions:
 	 * X <-> B
 	 * X <-> pAn <-> pB
 	 */
+
+	lws_vhost_lock(wsi->vhost);
+
 	wsi->same_vh_protocol_prev = /* guy who points to us */
 		&wsi->vhost->same_vh_protocol_list[n];
 	wsi->same_vh_protocol_next = /* old first guy is our next */
@@ -879,6 +915,9 @@ check_extensions:
 		/* old first guy points back to us now */
 		wsi->same_vh_protocol_next->same_vh_protocol_prev =
 				&wsi->same_vh_protocol_next;
+	wsi->on_same_vh_list = 1;
+
+	lws_vhost_unlock(wsi->vhost);
 
 #ifndef LWS_NO_EXTENSIONS
 	/* instantiate the accepted extensions */
@@ -1140,7 +1179,7 @@ bail2:
 	lwsl_info("closing connection due to bail2 connection error\n");
 
 	/* closing will free up his parsing allocations */
-	lws_close_free_wsi(wsi, close_reason);
+	lws_close_free_wsi(wsi, close_reason, "c hs interp");
 
 	return 1;
 }

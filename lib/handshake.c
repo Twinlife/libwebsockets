@@ -65,9 +65,12 @@ lws_read(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 	unsigned char *last_char, *oldbuf = buf;
 	lws_filepos_t body_chunk_len;
 	size_t n;
+#if defined(LWS_WITH_HTTP2)
+	int m;
+#endif
 
 	switch (wsi->state) {
-#ifdef LWS_WITH_HTTP2
+#if defined(LWS_WITH_HTTP2)
 	case LWSS_HTTP2_AWAIT_CLIENT_PREFACE:
 	case LWSS_HTTP2_ESTABLISHED_PRE_SETTINGS:
 	case LWSS_HTTP2_ESTABLISHED:
@@ -113,9 +116,16 @@ lws_read(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 			 * file transfers operate.
 			 */
 
-			if (lws_h2_parser(wsi, buf, len, &body_chunk_len)) {
+			m = lws_h2_parser(wsi, buf, len, &body_chunk_len);
+			if (m && m != 2) {
 				lwsl_debug("%s: http2_parser bailed\n", __func__);
 				goto bail;
+			}
+			if (m && m == 2) {
+				/* swsi has been closed */
+				buf += body_chunk_len;
+				len -= body_chunk_len;
+				goto read_ok;
 			}
 
 			/* account for what we're using in rxflow buffer */
@@ -127,7 +137,7 @@ lws_read(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 			buf += body_chunk_len;
 			len -= body_chunk_len;
 		}
-		lwsl_debug("%s: used up block\n", __func__);
+//		lwsl_debug("%s: used up block\n", __func__);
 		break;
 #endif
 
@@ -170,7 +180,7 @@ lws_read(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 		 * appropriately:
 		 */
 		len -= (buf - last_char);
-		lwsl_debug("%s: thinks we have used %ld\n", __func__, (long)len);
+//		lwsl_debug("%s: thinks we have used %ld\n", __func__, (long)len);
 
 		if (!wsi->hdr_parsing_completed)
 			/* More header content on the way */
@@ -277,12 +287,16 @@ postbody_completion:
 	case LWSS_AWAITING_CLOSE_ACK:
 	case LWSS_WAITING_TO_SEND_CLOSE_NOTIFICATION:
 	case LWSS_SHUTDOWN:
+	case LWSS_SHUTDOWN | _LSF_POLLOUT | _LSF_CCB:
 		if (lws_handshake_client(wsi, &buf, (size_t)len))
 			goto bail;
+
 		switch (wsi->mode) {
 		case LWSCM_WS_SERVING:
 		case LWSCM_HTTP2_WS_SERVING:
-
+			/*
+			 * for h2 we are on the swsi
+			 */
 			if (lws_interpret_incoming_packet(wsi, &buf,
 							  (size_t)len) < 0) {
 				lwsl_info("interpret_incoming_packet bailed\n");
@@ -296,6 +310,11 @@ postbody_completion:
 		lwsl_debug("%s: LWSS_HTTP_DEFERRING_ACTION\n", __func__);
 		break;
 
+	case LWSS_DEAD_SOCKET:
+		lwsl_err("%s: Unhandled state LWSS_DEAD_SOCKET\n", __func__);
+		assert(0);
+		/* fallthru */
+
 	default:
 		lwsl_err("%s: Unhandled state %d\n", __func__, wsi->state);
 		goto bail;
@@ -303,19 +322,21 @@ postbody_completion:
 
 read_ok:
 	/* Nothing more to do for now */
-	lwsl_info("%s: %p: read_ok, used %ld (len %d, state %d)\n", __func__,
-		  wsi, (long)(buf - oldbuf), (int)len, wsi->state);
+//	lwsl_info("%s: %p: read_ok, used %ld (len %d, state %d)\n", __func__,
+//		  wsi, (long)(buf - oldbuf), (int)len, wsi->state);
 
 	return lws_ptr_diff(buf, oldbuf);
 
 bail:
 	/*
 	 * h2 / h2-ws calls us recursively in lws_read()->lws_h2_parser()->
-	 * lws_read() pattern.  Make sure that only the outer lws_read() does
-	 * the wsi close.
+	 * lws_read() pattern, having stripped the h2 framing in the middle.
+	 *
+	 * When taking down the whole connection, make sure that only the
+	 * outer lws_read() does the wsi close.
 	 */
 	if (!wsi->outer_will_close)
-		lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
+		lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "lws_read bail");
 
 	return -1;
 }

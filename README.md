@@ -8,22 +8,56 @@ libwebsockets
 News
 ----
 
+## Lws has the first official ws-over-h2 server support
+
+There's a new standard on the RFC track that enabled multiplexing ws connections
+over an http/2 link.  Compared to making individual tcp and tls connections for
+each ws link back to the same server, this makes your site start up radically
+faster, and since all the connections are in one tls tunnel, with much memory
+reduction serverside.
+
+To enable it on master you just need -DLWS_WITH_HTTP2=1 at cmake.  No changes to
+existing code are necessary for either http/2 (if you use the official header creation
+apis if you return your own headers, as shown in the test apps for several versions)
+or to take advantage of ws-over-h2.  When built with http/2 support, it automatically
+falls back to http/1 and traditional ws upgrade if that's all the client can handle.
+
+Currently only Chrome Canary v67 supports this ws-over-h2 encapsulation but the other
+browsers will catch up soon.
+
+## New "minimal examples"
+
+https://github.com/warmcat/libwebsockets/tree/master/minimal-examples
+
+These are like the test apps, but focus on doing one thing, the best way, with the minimum amount of code.  For example the minimal-http-server serves the cwd on http/1 or http/2 in 50 LOC.
+
+They also build standalone, so it's easier to copy them directly to start your own project; they
+are CC0 licensed (public domain) to facilitate that.
+
+## Windows binary builds
+
 32- and 64-bit Windows binary builds are available via Appveyor.  Visit [lws on Appveyor](https://ci.appveyor.com/project/lws-team/libwebsockets),
 click on a build, the ARTIFACTS, and unzip the zip file at `C:\Program Files (x86)/libwebsockets`.
 
- - v2.4 is out... HTTP/2 server support and mbedTLS as a TLS backend.
+## Latest Stable
+
+ - v2.4.2 is out... HTTP/2 server support and mbedTLS as a TLS backend.
 
 see the changelog https://github.com/warmcat/libwebsockets/blob/v2.4-stable/changelog
 
 Please note the additional READMEs have moved to ./READMEs/
 
- - v2.3 is out... see the changelog https://github.com/warmcat/libwebsockets/blob/v2.3-stable/changelog
+## ESP32 is supported
 
 ESP32 is now supported in lws!  Download the
 
  - factory https://github.com/warmcat/lws-esp32-factory and
  - test server app https://github.com/warmcat/lws-esp32-test-server-demos
 
+The ESP32 stuff has my dynamic mbedtls buffer allocation patches applied,
+which reduce allocation for small payload TLS links by around 26KiB per connection.
+
+## Support
 
 This is the libwebsockets C library for lightweight websocket clients and
 servers.  For support, visit

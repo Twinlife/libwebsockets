@@ -226,7 +226,7 @@ int main(int argc, char **argv)
 		switch (n) {
 		case 'j':
 			threads = atoi(optarg);
-			if (threads > ARRAY_SIZE(pthread_service)) {
+			if (threads > (int)ARRAY_SIZE(pthread_service)) {
 				lwsl_err("Max threads %lu\n",
 					 (unsigned long)ARRAY_SIZE(pthread_service));
 				return 1;
@@ -256,8 +256,7 @@ int main(int argc, char **argv)
 			info.port = atoi(optarg);
 			break;
 		case 'i':
-			strncpy(interface_name, optarg, sizeof interface_name);
-			interface_name[(sizeof interface_name) - 1] = '\0';
+			lws_strncpy(interface_name, optarg, sizeof interface_name);
 			iface = interface_name;
 			break;
 		case 'c':
@@ -300,9 +299,9 @@ int main(int argc, char **argv)
 #endif
 
 	/* tell the library what debug level to emit and to send it to syslog */
-	lws_set_log_level(debug_level, lwsl_emit_syslog);
+	lws_set_log_level(debug_level, NULL);
 	lwsl_notice("libwebsockets test server pthreads - license LGPL2.1+SLE\n");
-	lwsl_notice("(C) Copyright 2010-2016 Andy Green <andy@warmcat.com>\n");
+	lwsl_notice("(C) Copyright 2010-2018 Andy Green <andy@warmcat.com>\n");
 
 	printf("Using resource path \"%s\"\n", resource_path);
 #ifdef EXTERNAL_POLL
@@ -345,6 +344,13 @@ int main(int argc, char **argv)
 	info.count_threads = threads;
 	info.extensions = exts;
 	info.max_http_header_pool = 4;
+	info.pt_serv_buf_size = 128 * 1024;
+
+	/* when doing slow benchmarks with thousands of concurrent
+	 * connections, we need wait longer
+	 */
+	info.timeout_secs = 30;
+	info.keepalive_timeout = 30;
 
 	context = lws_create_context(&info);
 	if (context == NULL) {
@@ -365,6 +371,8 @@ int main(int argc, char **argv)
 	 * so use lws_get_count_threads() to get the actual amount of threads
 	 * initialized.
 	 */
+
+	lwsl_notice("Service thread count: %d\n", lws_get_count_threads(context));
 
 	for (n = 0; n < lws_get_count_threads(context); n++)
 		if (pthread_create(&pthread_service[n], NULL, thread_service,

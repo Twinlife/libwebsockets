@@ -45,19 +45,19 @@ int lws_ssl_get_error(struct lws *wsi, int n)
 char* lws_ssl_get_error_string(int status, int ret, char *buf, size_t len) {
 	switch (status) {
 	case SSL_ERROR_NONE:
-		return strncpy(buf, "SSL_ERROR_NONE", len);
+		return lws_strncpy(buf, "SSL_ERROR_NONE", len);
 	case SSL_ERROR_ZERO_RETURN:
-		return strncpy(buf, "SSL_ERROR_ZERO_RETURN", len);
+		return lws_strncpy(buf, "SSL_ERROR_ZERO_RETURN", len);
 	case SSL_ERROR_WANT_READ:
-		return strncpy(buf, "SSL_ERROR_WANT_READ", len);
+		return lws_strncpy(buf, "SSL_ERROR_WANT_READ", len);
 	case SSL_ERROR_WANT_WRITE:
-		return strncpy(buf, "SSL_ERROR_WANT_WRITE", len);
+		return lws_strncpy(buf, "SSL_ERROR_WANT_WRITE", len);
 	case SSL_ERROR_WANT_CONNECT:
-		return strncpy(buf, "SSL_ERROR_WANT_CONNECT", len);
+		return lws_strncpy(buf, "SSL_ERROR_WANT_CONNECT", len);
 	case SSL_ERROR_WANT_ACCEPT:
-		return strncpy(buf, "SSL_ERROR_WANT_ACCEPT", len);
+		return lws_strncpy(buf, "SSL_ERROR_WANT_ACCEPT", len);
 	case SSL_ERROR_WANT_X509_LOOKUP:
-		return strncpy(buf, "SSL_ERROR_WANT_X509_LOOKUP", len);
+		return lws_strncpy(buf, "SSL_ERROR_WANT_X509_LOOKUP", len);
 	case SSL_ERROR_SYSCALL:
 		switch (ret) {
                 case 0:
@@ -456,11 +456,14 @@ lws_ssl_context_destroy(struct lws_context *context)
 lws_tls_ctx *
 lws_tls_ctx_from_wsi(struct lws *wsi)
 {
+	if (!wsi->ssl)
+		return NULL;
+
 	return SSL_get_SSL_CTX(wsi->ssl);
 }
 
 enum lws_ssl_capable_status
-lws_tls_shutdown(struct lws *wsi)
+__lws_tls_shutdown(struct lws *wsi)
 {
 	int n;
 
@@ -472,7 +475,7 @@ lws_tls_shutdown(struct lws *wsi)
 		return LWS_SSL_CAPABLE_DONE;
 
 	case 0: /* needs a retry */
-		lws_change_pollfd(wsi, 0, LWS_POLLIN);
+		__lws_change_pollfd(wsi, 0, LWS_POLLIN);
 		return LWS_SSL_CAPABLE_MORE_SERVICE;
 
 	default: /* fatal error, or WANT */
@@ -480,12 +483,12 @@ lws_tls_shutdown(struct lws *wsi)
 		if (n != SSL_ERROR_SYSCALL && n != SSL_ERROR_SSL) {
 			if (SSL_want_read(wsi->ssl)) {
 				lwsl_debug("(wants read)\n");
-				lws_change_pollfd(wsi, 0, LWS_POLLIN);
+				__lws_change_pollfd(wsi, 0, LWS_POLLIN);
 				return LWS_SSL_CAPABLE_MORE_SERVICE_READ;
 			}
 			if (SSL_want_write(wsi->ssl)) {
 				lwsl_debug("(wants write)\n");
-				lws_change_pollfd(wsi, 0, LWS_POLLOUT);
+				__lws_change_pollfd(wsi, 0, LWS_POLLOUT);
 				return LWS_SSL_CAPABLE_MORE_SERVICE_WRITE;
 			}
 		}

@@ -572,6 +572,10 @@ lws_create_vhost(struct lws_context *context,
 	if (!vh)
 		return NULL;
 
+#if LWS_MAX_SMP > 1
+	pthread_mutex_init(&vh->lock, NULL);
+#endif
+
 	if (!info->protocols)
 		info->protocols = &protocols_dummy[0];
 
@@ -580,6 +584,11 @@ lws_create_vhost(struct lws_context *context,
 		vh->name = "default";
 	else
 		vh->name = info->vhost_name;
+
+	vh->error_document_404 = info->error_document_404;
+	if (info->error_document_404 &&
+	    info->error_document_404[0] == '/')
+		vh->error_document_404 = info->error_document_404 + 1;
 
 	if (info->options & LWS_SERVER_OPTION_ONLY_RAW)
 		lwsl_info("%s set to only support RAW\n", vh->name);
@@ -619,7 +628,7 @@ lws_create_vhost(struct lws_context *context,
 
 #ifdef LWS_OPENSSL_SUPPORT
 	if (info->ecdh_curve)
-		strncpy(vh->ecdh_curve, info->ecdh_curve, sizeof(vh->ecdh_curve) - 1);
+		lws_strncpy(vh->ecdh_curve, info->ecdh_curve, sizeof(vh->ecdh_curve) - 1);
 #endif
 
 	/* carefully allocate and take a copy of cert + key paths if present */
@@ -903,7 +912,7 @@ lws_cancel_service(struct lws_context *context)
 	struct lws_context_per_thread *pt = &context->pt[0];
 	short m = context->count_threads;
 
-	lwsl_notice("%s\n", __func__);
+	lwsl_info("%s\n", __func__);
 
 	while (m--) {
 		if (pt->pipe_wsi)
@@ -952,7 +961,7 @@ lws_create_event_pipes(struct lws_context *context)
 		lws_libev_accept(wsi, wsi->desc);
 		lws_libevent_accept(wsi, wsi->desc);
 
-		if (insert_wsi_socket_into_fds(context, wsi))
+		if (__insert_wsi_socket_into_fds(context, wsi))
 			return 1;
 
 		lws_change_pollfd(context->pt[n].pipe_wsi, 0, LWS_POLLIN);
@@ -966,7 +975,7 @@ static void
 lws_destroy_event_pipe(struct lws *wsi)
 {
 	lws_plat_pipe_close(wsi);
-	remove_wsi_socket_from_fds(wsi);
+	__remove_wsi_socket_from_fds(wsi);
 	lws_libevent_destroy(wsi);
 	wsi->context->count_wsi_allocated--;
 	lws_free(wsi);
@@ -1368,7 +1377,7 @@ lws_context_deprecate(struct lws_context *context, lws_reload_func cb)
 		wsi = vh->lserv_wsi;
 		if (wsi) {
 			wsi->socket_is_permanently_unusable = 1;
-			lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
+			lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "ctx deprecate");
 			wsi->context->deprecation_pending_listen_close_count++;
 			/*
 			 * other vhosts can share the listen port, they
@@ -1466,7 +1475,8 @@ lws_vhost_destroy1(struct lws_vhost *vh)
 				continue;
 
 			lws_close_free_wsi(wsi,
-				LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY
+				LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY,
+				"vh destroy"
 				/* no protocol close */);
 			n--;
 		}
@@ -1487,7 +1497,7 @@ lws_vhost_destroy1(struct lws_vhost *vh)
 	wsi.context = vh->context;
 	wsi.vhost = vh;
 	protocol = vh->protocols;
-	if (protocol) {
+	if (protocol && vh->created_vhost_protocols) {
 		n = 0;
 		while (n < vh->count_protocols) {
 			wsi.protocol = protocol;
@@ -1591,6 +1601,10 @@ lws_vhost_destroy2(struct lws_vhost *vh)
 #endif
 
 	lws_free_set_NULL(vh->alloc_cert_path);
+
+#if LWS_MAX_SMP > 1
+       pthread_mutex_destroy(&vh->lock);
+#endif
 
 	/*
 	 * although async event callbacks may still come for wsi handles with
@@ -1700,7 +1714,8 @@ lws_context_destroy(struct lws_context *context)
 				lws_destroy_event_pipe(wsi);
 			else
 				lws_close_free_wsi(wsi,
-					LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY
+					LWS_CLOSE_STATUS_NOSTATUS_CONTEXT_DESTROY,
+					"ctx destroy"
 					/* no protocol close */);
 			n--;
 		}

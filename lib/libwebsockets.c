@@ -59,14 +59,14 @@ static const char * const log_level_names[] = {
 #endif
 
 void
-lws_free_wsi(struct lws *wsi)
+__lws_free_wsi(struct lws *wsi)
 {
 	struct lws_context_per_thread *pt;
 	struct allocated_headers *ah;
 
 	if (!wsi)
 		return;
-	
+
 	pt = &wsi->context->pt[(int)wsi->tsi];
 
 	/*
@@ -85,12 +85,11 @@ lws_free_wsi(struct lws *wsi)
 	lwsl_info("ah det due to close\n");
 	/* we're closing, losing some rx is OK */
 	lws_header_table_force_to_detachable_state(wsi);
-	lws_header_table_detach(wsi, 0);
+	__lws_header_table_detach(wsi, 0);
 
 	if (wsi->vhost && wsi->vhost->lserv_wsi == wsi)
 		wsi->vhost->lserv_wsi = NULL;
 
-	lws_pt_lock(pt);
 	ah = pt->ah_list;
 	while (ah) {
 		if (ah->in_use && ah->wsi == wsi) {
@@ -117,12 +116,12 @@ lws_free_wsi(struct lws *wsi)
 	}
 #endif
 
-	lws_pt_unlock(pt);
-
 	/* since we will destroy the wsi, make absolutely sure now */
 
-	lws_ssl_remove_wsi_from_buffered_list(wsi);
-	lws_remove_from_timeout_list(wsi);
+#if defined(LWS_WITH_OPENSSL)
+	__lws_ssl_remove_wsi_from_buffered_list(wsi);
+#endif
+	__lws_remove_from_timeout_list(wsi);
 
 	lws_libevent_destroy(wsi);
 
@@ -140,14 +139,11 @@ lws_should_be_on_timeout_list(struct lws *wsi)
 }
 
 void
-lws_remove_from_timeout_list(struct lws *wsi)
+__lws_remove_from_timeout_list(struct lws *wsi)
 {
-	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
-
 	if (!wsi->timeout_list_prev) /* ie, not part of the list */
 		return;
 
-	lws_pt_lock(pt);
 	/* if we have a next guy, set his prev to our prev */
 	if (wsi->timeout_list)
 		wsi->timeout_list->timeout_list_prev = wsi->timeout_list_prev;
@@ -157,12 +153,22 @@ lws_remove_from_timeout_list(struct lws *wsi)
 	/* we're out of the list, we should not point anywhere any more */
 	wsi->timeout_list_prev = NULL;
 	wsi->timeout_list = NULL;
+}
+
+void
+lws_remove_from_timeout_list(struct lws *wsi)
+{
+	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+
+	lws_pt_lock(pt, __func__);
+
+	__lws_remove_from_timeout_list(wsi);
 
 	lws_pt_unlock(pt);
 }
 
 static void
-lws_add_to_timeout_list(struct lws *wsi)
+__lws_add_to_timeout_list(struct lws *wsi)
 {
 	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
 
@@ -180,16 +186,17 @@ lws_add_to_timeout_list(struct lws *wsi)
 	*wsi->timeout_list_prev = wsi;
 }
 
-LWS_VISIBLE void
-lws_set_timer(struct lws *wsi, int secs)
+void
+__lws_set_timer(struct lws *wsi, int secs)
 {
+//	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
 	time_t now;
 
 	if (secs < 0) {
 		wsi->timer_active = 0;
 
 		if (!lws_should_be_on_timeout_list(wsi))
-			lws_remove_from_timeout_list(wsi);
+			__lws_remove_from_timeout_list(wsi);
 
 		return;
 	}
@@ -202,39 +209,56 @@ lws_set_timer(struct lws *wsi, int secs)
 	if (!wsi->timer_active) {
 		wsi->timer_active = 1;
 		if (!wsi->pending_timeout)
-			lws_add_to_timeout_list(wsi);
+			__lws_add_to_timeout_list(wsi);
 	}
 }
 
 LWS_VISIBLE void
-lws_set_timeout(struct lws *wsi, enum pending_timeout reason, int secs)
+lws_set_timer(struct lws *wsi, int secs)
 {
-	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+	//struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+
+//	lws_pt_lock(pt, __func__);
+	__lws_set_timer(wsi, secs);
+//	lws_pt_unlock(pt);
+}
+
+void
+__lws_set_timeout(struct lws *wsi, enum pending_timeout reason, int secs)
+{
 	time_t now;
-
-	if (secs == LWS_TO_KILL_SYNC) {
-		lws_remove_from_timeout_list(wsi);
-		lwsl_debug("synchronously killing %p\n", wsi);
-		lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS);
-		return;
-	}
-
-	lws_pt_lock(pt);
 
 	time(&now);
 
 	if (reason)
-		lws_add_to_timeout_list(wsi);
+		__lws_add_to_timeout_list(wsi);
 
 	lwsl_debug("%s: %p: %d secs\n", __func__, wsi, secs);
 	wsi->pending_timeout_limit = secs;
 	wsi->pending_timeout_set = now;
 	wsi->pending_timeout = reason;
 
-	lws_pt_unlock(pt);
-
 	if (!reason && !lws_should_be_on_timeout_list(wsi))
+		__lws_remove_from_timeout_list(wsi);
+}
+
+LWS_VISIBLE void
+lws_set_timeout(struct lws *wsi, enum pending_timeout reason, int secs)
+{
+	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+
+	if (secs == LWS_TO_KILL_SYNC) {
 		lws_remove_from_timeout_list(wsi);
+		lwsl_debug("synchronously killing %p\n", wsi);
+		lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "to sync kill");
+		return;
+	}
+
+	lws_pt_lock(pt, __func__);
+
+	__lws_set_timeout(wsi, reason, secs);
+
+	lws_pt_unlock(pt);
 }
 
 int
@@ -357,7 +381,7 @@ lws_bind_protocol(struct lws *wsi, const struct lws_protocols *p)
 }
 
 void
-lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
+__lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason, const char *caller)
 {
 	struct lws_context_per_thread *pt;
 	struct lws *wsi1, *wsi2;
@@ -365,7 +389,7 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 	struct lws_tokens eff_buf;
 	int n, m, ret;
 
-	lwsl_debug("%s: %p\n", __func__, wsi);
+	lwsl_info("%s: %p: caller: %s\n", __func__, wsi, caller);
 
 	if (!wsi)
 		return;
@@ -387,88 +411,16 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 			wsi2->parent = NULL;
 			/* stop it doing shutdown processing */
 			wsi2->socket_is_permanently_unusable = 1;
-			lws_close_free_wsi(wsi2, reason);
+			__lws_close_free_wsi(wsi2, reason, "general child recurse");
 			wsi2 = wsi1;
 		}
 		wsi->child_list = NULL;
 	}
 
-#if defined(LWS_WITH_HTTP2)
-
-	if (wsi->h2.parent_wsi) {
-		lwsl_info(" wsi: %p, his parent %p: siblings:\n", wsi,
-			  wsi->h2.parent_wsi);
-		lws_start_foreach_llp(struct lws **, w,
-				      wsi->h2.parent_wsi->h2.child_list) {
-			lwsl_info("   \\---- child %p\n", *w);
-		} lws_end_foreach_llp(w, h2.sibling_list);
-	}
-
-	if (wsi->upgraded_to_http2 || wsi->http2_substream) {
-		lwsl_info("closing %p: parent %p\n", wsi, wsi->h2.parent_wsi);
-
-		if (wsi->h2.child_list) {
-			lwsl_info(" parent %p: closing children: list:\n", wsi);
-			lws_start_foreach_llp(struct lws **, w,
-					      wsi->h2.child_list) {
-				lwsl_info("   \\---- child %p\n", *w);
-			} lws_end_foreach_llp(w, h2.sibling_list);
-			/* trigger closing of all of our http2 children first */
-			lws_start_foreach_llp(struct lws **, w,
-					      wsi->h2.child_list) {
-				lwsl_info("   closing child %p\n", *w);
-				/* disconnect from siblings */
-				wsi2 = (*w)->h2.sibling_list;
-				(*w)->h2.sibling_list = NULL;
-				(*w)->socket_is_permanently_unusable = 1;
-				lws_close_free_wsi(*w, reason);
-				*w = wsi2;
-				continue;
-			} lws_end_foreach_llp(w, h2.sibling_list);
-		}
-	}
-
-	if (wsi->upgraded_to_http2) {
-		/* remove pps */
-		struct lws_h2_protocol_send *w = wsi->h2.h2n->pps, *w1;
-		while (w) {
-			w1 = w->next;
-			free(w);
-			w = w1;
-		}
-		wsi->h2.h2n->pps = NULL;
-	}
-
-	if (wsi->http2_substream && wsi->h2.parent_wsi) {
-		lwsl_info("  %p: disentangling from siblings\n", wsi);
-		lws_start_foreach_llp(struct lws **, w,
-				wsi->h2.parent_wsi->h2.child_list) {
-			/* disconnect from siblings */
-			if (*w == wsi) {
-				wsi2 = (*w)->h2.sibling_list;
-				(*w)->h2.sibling_list = NULL;
-				*w = wsi2;
-				lwsl_info("  %p disentangled from sibling %p\n",
-					  wsi, wsi2);
-				break;
-			}
-		} lws_end_foreach_llp(w, h2.sibling_list);
-		wsi->h2.parent_wsi->h2.child_count--;
-		wsi->h2.parent_wsi = NULL;
-		if (wsi->h2.pending_status_body)
-			lws_free_set_NULL(wsi->h2.pending_status_body);
-	}
-
-	if (wsi->upgraded_to_http2 && wsi->h2.h2n &&
-	    wsi->h2.h2n->rx_scratch)
-		lws_free_set_NULL(wsi->h2.h2n->rx_scratch);
-#endif
-
 	if (wsi->mode == LWSCM_RAW_FILEDESC) {
 		lws_remove_child_from_any_parent(wsi);
-		remove_wsi_socket_from_fds(wsi);
-		wsi->protocol->callback(wsi,
-					LWS_CALLBACK_RAW_CLOSE_FILE,
+		__remove_wsi_socket_from_fds(wsi);
+		wsi->protocol->callback(wsi, LWS_CALLBACK_RAW_CLOSE_FILE,
 					wsi->user_space, NULL, 0);
 		goto async_close;
 	}
@@ -539,7 +491,7 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 		if (wsi->trunc_len) {
 			lwsl_info("%p: FLUSHING_STORED_SEND_BEFORE_CLOSE\n", wsi);
 			wsi->state = LWSS_FLUSHING_SEND_BEFORE_CLOSE;
-			lws_set_timeout(wsi,
+			__lws_set_timeout(wsi,
 				PENDING_FLUSH_STORED_SEND_BEFORE_CLOSE, 5);
 			return;
 		}
@@ -638,13 +590,97 @@ lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason)
 		lwsl_debug("waiting for chance to send close\n");
 		wsi->waiting_to_send_close_frame = 1;
 		wsi->state = LWSS_WAITING_TO_SEND_CLOSE_NOTIFICATION;
-		lws_set_timeout(wsi, PENDING_TIMEOUT_CLOSE_SEND, 2);
+		__lws_set_timeout(wsi, PENDING_TIMEOUT_CLOSE_SEND, 5);
 		lws_callback_on_writable(wsi);
 
 		return;
 	}
 
 just_kill_connection:
+
+#if defined(LWS_WITH_HTTP2)
+
+	if (wsi->http2_substream && wsi->h2_stream_carries_ws)
+		lws_h2_rst_stream(wsi, 0, "none");
+
+	if (wsi->h2.parent_wsi) {
+		lwsl_info(" wsi: %p, his parent %p: siblings:\n", wsi,
+			  wsi->h2.parent_wsi);
+		lws_start_foreach_llp(struct lws **, w,
+				      wsi->h2.parent_wsi->h2.child_list) {
+			lwsl_info("   \\---- child %p\n", *w);
+		} lws_end_foreach_llp(w, h2.sibling_list);
+	}
+
+	if (wsi->upgraded_to_http2 || wsi->http2_substream) {
+		lwsl_info("closing %p: parent %p\n", wsi, wsi->h2.parent_wsi);
+
+		if (wsi->h2.child_list) {
+			lwsl_info(" parent %p: closing children: list:\n", wsi);
+			lws_start_foreach_llp(struct lws **, w,
+					      wsi->h2.child_list) {
+				lwsl_info("   \\---- child %p\n", *w);
+			} lws_end_foreach_llp(w, h2.sibling_list);
+			/* trigger closing of all of our http2 children first */
+			lws_start_foreach_llp(struct lws **, w,
+					      wsi->h2.child_list) {
+				lwsl_info("   closing child %p\n", *w);
+				/* disconnect from siblings */
+				wsi2 = (*w)->h2.sibling_list;
+				(*w)->h2.sibling_list = NULL;
+				(*w)->socket_is_permanently_unusable = 1;
+				__lws_close_free_wsi(*w, reason, "h2 child recurse");
+				*w = wsi2;
+				continue;
+			} lws_end_foreach_llp(w, h2.sibling_list);
+		}
+	}
+
+	if (wsi->upgraded_to_http2) {
+		/* remove pps */
+		struct lws_h2_protocol_send *w = wsi->h2.h2n->pps, *w1;
+		while (w) {
+			w1 = w->next;
+			free(w);
+			w = w1;
+		}
+		wsi->h2.h2n->pps = NULL;
+	}
+
+	if (wsi->http2_substream && wsi->h2.parent_wsi) {
+		lwsl_info("  %p: disentangling from siblings\n", wsi);
+		lws_start_foreach_llp(struct lws **, w,
+				wsi->h2.parent_wsi->h2.child_list) {
+			/* disconnect from siblings */
+			if (*w == wsi) {
+				wsi2 = (*w)->h2.sibling_list;
+				(*w)->h2.sibling_list = NULL;
+				*w = wsi2;
+				lwsl_info("  %p disentangled from sibling %p\n",
+					  wsi, wsi2);
+				break;
+			}
+		} lws_end_foreach_llp(w, h2.sibling_list);
+		wsi->h2.parent_wsi->h2.child_count--;
+		wsi->h2.parent_wsi = NULL;
+		if (wsi->h2.pending_status_body)
+			lws_free_set_NULL(wsi->h2.pending_status_body);
+	}
+
+	if (wsi->h2_stream_carries_ws) {
+		struct lws *nwsi = lws_get_network_wsi(wsi);
+
+		nwsi->ws_over_h2_count++;
+		/* if no ws, then put a timeout on the parent wsi */
+		if (!nwsi->ws_over_h2_count)
+			__lws_set_timeout(nwsi,
+				PENDING_TIMEOUT_HTTP_KEEPALIVE_IDLE, 31);
+	}
+
+	if (wsi->upgraded_to_http2 && wsi->h2.h2n &&
+	    wsi->h2.h2n->rx_scratch)
+		lws_free_set_NULL(wsi->h2.h2n->rx_scratch);
+#endif
 
 	lws_remove_child_from_any_parent(wsi);
 	n = 0;
@@ -660,7 +696,7 @@ just_kill_connection:
 	if ((wsi->mode == LWSCM_WSCL_WAITING_SERVER_REPLY ||
 			   wsi->mode == LWSCM_WSCL_WAITING_CONNECT) &&
 			   !wsi->already_did_cce) {
-				wsi->vhost->protocols[0].callback(wsi,
+				wsi->protocol->callback(wsi,
 					LWS_CALLBACK_CLIENT_CONNECTION_ERROR,
 						wsi->user_space, NULL, 0);
 	}
@@ -695,7 +731,7 @@ just_kill_connection:
 #ifdef LWS_OPENSSL_SUPPORT
 	if (lws_is_ssl(wsi) && wsi->ssl) {
 		n = 0;
-		switch (lws_tls_shutdown(wsi)) {
+		switch (__lws_tls_shutdown(wsi)) {
 		case LWS_SSL_CAPABLE_DONE:
 		case LWS_SSL_CAPABLE_ERROR:
 		case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
@@ -727,10 +763,11 @@ just_kill_connection:
 		/* libuv: no event available to guarantee completion */
 		if (!wsi->socket_is_permanently_unusable &&
 		    lws_sockfd_valid(wsi->desc.sockfd) &&
+		    wsi->state != ((wsi->state & ~0x1f) | LWSS_SHUTDOWN) &&
 		    !LWS_LIBUV_ENABLED(context)) {
-			lws_change_pollfd(wsi, LWS_POLLOUT, LWS_POLLIN);
+			__lws_change_pollfd(wsi, LWS_POLLOUT, LWS_POLLIN);
 			wsi->state = (wsi->state & ~0x1f) | LWSS_SHUTDOWN;
-			lws_set_timeout(wsi, PENDING_TIMEOUT_SHUTDOWN_FLUSH,
+			__lws_set_timeout(wsi, PENDING_TIMEOUT_SHUTDOWN_FLUSH,
 					context->timeout_secs);
 
 			return;
@@ -752,12 +789,12 @@ just_kill_connection:
 	 * we won't be servicing or receiving anything further from this guy
 	 * delete socket from the internal poll list if still present
 	 */
-	lws_ssl_remove_wsi_from_buffered_list(wsi);
-	lws_remove_from_timeout_list(wsi);
+	__lws_ssl_remove_wsi_from_buffered_list(wsi);
+	__lws_remove_from_timeout_list(wsi);
 
 	/* checking return redundant since we anyway close */
 	if (wsi->desc.sockfd != LWS_SOCK_INVALID)
-		remove_wsi_socket_from_fds(wsi);
+		__remove_wsi_socket_from_fds(wsi);
 	else
 		lws_same_vh_protocol_remove(wsi);
 
@@ -810,8 +847,12 @@ just_kill_connection:
 
 	if (wsi->protocol && !wsi->told_user_closed && wsi->protocol->callback &&
 	    wsi->mode != LWSCM_RAW && (wsi->state_pre_close & _LSF_CCB)) {
-		wsi->protocol->callback(wsi, LWS_CALLBACK_CLOSED,
-					wsi->user_space, NULL, 0);
+		if (wsi->mode == LWSCM_WS_CLIENT)
+			wsi->protocol->callback(wsi, LWS_CALLBACK_CLIENT_CLOSED,
+						wsi->user_space, NULL, 0);
+		else
+			wsi->protocol->callback(wsi, LWS_CALLBACK_CLOSED,
+						wsi->user_space, NULL, 0);
 	} else if (wsi->mode == LWSCM_HTTP_SERVING_ACCEPTED) {
 		lwsl_debug("calling back CLOSED_HTTP\n");
 		wsi->vhost->protocols->callback(wsi, LWS_CALLBACK_CLOSED_HTTP,
@@ -855,11 +896,11 @@ async_close:
 		}
 #endif
 
-	lws_close_free_wsi_final(wsi);
+	__lws_close_free_wsi_final(wsi);
 }
 
 void
-lws_close_free_wsi_final(struct lws *wsi)
+__lws_close_free_wsi_final(struct lws *wsi)
 {
 	int n;
 
@@ -903,7 +944,18 @@ lws_close_free_wsi_final(struct lws *wsi)
 	}
 #endif
 
-	lws_free_wsi(wsi);
+	__lws_free_wsi(wsi);
+}
+
+
+void
+lws_close_free_wsi(struct lws *wsi, enum lws_close_status reason, const char *caller)
+{
+	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+
+	lws_pt_lock(pt, __func__);
+	__lws_close_free_wsi(wsi, reason, caller);
+	lws_pt_unlock(pt);
 }
 
 LWS_VISIBLE LWS_EXTERN const char *
@@ -977,7 +1029,6 @@ lws_get_addresses(struct lws_vhost *vh, void *ads, char *name,
 		memset(&ai, 0, sizeof ai);
 		ai.ai_family = PF_UNSPEC;
 		ai.ai_socktype = SOCK_STREAM;
-		ai.ai_flags = AI_CANONNAME;
 #if !defined(LWS_WITH_ESP32)
 		if (getnameinfo((struct sockaddr *)ads,
 				sizeof(struct sockaddr_in),
@@ -1459,6 +1510,7 @@ lws_latency(struct lws_context *context, struct lws *wsi, const char *action,
 LWS_VISIBLE int
 lws_rx_flow_control(struct lws *wsi, int _enable)
 {
+	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
 	int en = _enable;
 
 	lwsl_info("%s: %p 0x%x\n", __func__, wsi, _enable);
@@ -1473,6 +1525,8 @@ lws_rx_flow_control(struct lws *wsi, int _enable)
 			en |= LWS_RXFLOW_REASON_APPLIES_ENABLE_BIT;
 	}
 
+	lws_pt_lock(pt, __func__);
+
 	/* any bit set in rxflow_bitmap DISABLEs rxflow control */
 	if (en & LWS_RXFLOW_REASON_APPLIES_ENABLE_BIT)
 		wsi->rxflow_bitmap &= ~(en & 0xff);
@@ -1481,7 +1535,7 @@ lws_rx_flow_control(struct lws *wsi, int _enable)
 
 	if ((LWS_RXFLOW_PENDING_CHANGE | (!wsi->rxflow_bitmap)) ==
 	    wsi->rxflow_change_to)
-		return 0;
+		goto skip;
 
 	wsi->rxflow_change_to = LWS_RXFLOW_PENDING_CHANGE | !wsi->rxflow_bitmap;
 
@@ -1489,8 +1543,15 @@ lws_rx_flow_control(struct lws *wsi, int _enable)
 		  wsi->rxflow_bitmap, en, wsi->rxflow_change_to);
 
 	if (_enable & LWS_RXFLOW_REASON_FLAG_PROCESS_NOW ||
-	    !wsi->rxflow_will_be_applied)
-		return _lws_rx_flow_control(wsi);
+	    !wsi->rxflow_will_be_applied) {
+		en = __lws_rx_flow_control(wsi);
+		lws_pt_unlock(pt);
+
+		return en;
+	}
+
+skip:
+	lws_pt_unlock(pt);
 
 	return 0;
 }
@@ -1583,7 +1644,7 @@ int user_callback_handle_rxflow(lws_callback_function callback_function,
 	n = callback_function(wsi, reason, user, in, len);
 	wsi->rxflow_will_be_applied = 0;
 	if (!n)
-		n = _lws_rx_flow_control(wsi);
+		n = __lws_rx_flow_control(wsi);
 
 	return n;
 }
@@ -1607,7 +1668,7 @@ lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 		if ((unsigned int)(p - proxy) > sizeof(authstring) - 1)
 			goto auth_too_long;
 
-		strncpy(authstring, proxy, p - proxy);
+		lws_strncpy(authstring, proxy, p - proxy);
 		// null termination not needed on input
 		if (lws_b64_encode_string(authstring, lws_ptr_diff(p, proxy),
 				vhost->proxy_basic_auth_token,
@@ -1620,10 +1681,8 @@ lws_set_proxy(struct lws_vhost *vhost, const char *proxy)
 	} else
 		vhost->proxy_basic_auth_token[0] = '\0';
 
-	strncpy(vhost->http_proxy_address, proxy,
+	lws_strncpy(vhost->http_proxy_address, proxy,
 				sizeof(vhost->http_proxy_address) - 1);
-	vhost->http_proxy_address[
-				sizeof(vhost->http_proxy_address) - 1] = '\0';
 
 	p = strchr(vhost->http_proxy_address, ':');
 	if (!p && !vhost->http_proxy_port) {
@@ -1683,8 +1742,8 @@ lws_set_socks(struct lws_vhost *vhost, const char *socks)
 				goto bail;
 			}
 
-			strncpy(vhost->socks_user, socks, p_colon - socks);
-			strncpy(vhost->socks_password, p_colon + 1,
+			lws_strncpy(vhost->socks_user, socks, p_colon - socks);
+			lws_strncpy(vhost->socks_password, p_colon + 1,
 				p_at - (p_colon + 1));
 		}
 
@@ -1694,10 +1753,8 @@ lws_set_socks(struct lws_vhost *vhost, const char *socks)
 		socks = p_at + 1;
 	}
 
-	strncpy(vhost->socks_proxy_address, socks,
-				sizeof(vhost->socks_proxy_address) - 1);
-	vhost->socks_proxy_address[sizeof(vhost->socks_proxy_address) - 1]
-		= '\0';
+	lws_strncpy(vhost->socks_proxy_address, socks,
+		    sizeof(vhost->socks_proxy_address) - 1);
 
 	p_colon = strchr(vhost->socks_proxy_address, ':');
 	if (!p_colon && !vhost->socks_proxy_port) {
@@ -1971,7 +2028,7 @@ lws_is_ssl(struct lws *wsi)
 #endif
 }
 
-#ifdef LWS_OPENSSL_SUPPORT
+#if defined(LWS_OPENSSL_SUPPORT) && !defined(LWS_WITH_MBEDTLS)
 LWS_VISIBLE lws_tls_conn*
 lws_get_ssl(struct lws *wsi)
 {
@@ -2102,7 +2159,9 @@ lws_close_reason(struct lws *wsi, enum lws_close_status status,
 	unsigned char *p, *start;
 	int budget = sizeof(wsi->ws->ping_payload_buf) - LWS_PRE;
 
-	assert(wsi->mode == LWSCM_WS_SERVING || wsi->mode == LWSCM_WS_CLIENT);
+	assert(wsi->mode == LWSCM_WS_SERVING ||
+	       wsi->mode == LWSCM_HTTP2_WS_SERVING ||
+	       wsi->mode == LWSCM_WS_CLIENT);
 
 	start = p = &wsi->ws->ping_payload_buf[LWS_PRE];
 
@@ -2117,14 +2176,14 @@ lws_close_reason(struct lws *wsi, enum lws_close_status status,
 }
 
 LWS_EXTERN int
-_lws_rx_flow_control(struct lws *wsi)
+__lws_rx_flow_control(struct lws *wsi)
 {
 	struct lws *wsic = wsi->child_list;
 
 	/* if he has children, do those if they were changed */
 	while (wsic) {
 		if (wsic->rxflow_change_to & LWS_RXFLOW_PENDING_CHANGE)
-			_lws_rx_flow_control(wsic);
+			__lws_rx_flow_control(wsic);
 
 		wsic = wsic->sibling_list;
 	}
@@ -2150,12 +2209,12 @@ _lws_rx_flow_control(struct lws *wsi)
 	/* adjust the pollfd for this wsi */
 
 	if (wsi->rxflow_change_to & LWS_RXFLOW_ALLOW) {
-		if (lws_change_pollfd(wsi, 0, LWS_POLLIN)) {
+		if (__lws_change_pollfd(wsi, 0, LWS_POLLIN)) {
 			lwsl_info("%s: fail\n", __func__);
 			return -1;
 		}
 	} else
-		if (lws_change_pollfd(wsi, LWS_POLLIN, 0))
+		if (__lws_change_pollfd(wsi, LWS_POLLIN, 0))
 			return -1;
 
 	return 0;
@@ -2685,6 +2744,15 @@ lws_snprintf(char *str, size_t size, const char *format, ...)
 	return n;
 }
 
+char *
+lws_strncpy(char *dest, const char *src, size_t size)
+{
+	strncpy(dest, src, size);
+	dest[size - 1] = '\0';
+
+	return dest;
+}
+
 
 LWS_VISIBLE LWS_EXTERN int
 lws_is_cgi(struct lws *wsi) {
@@ -2695,7 +2763,18 @@ lws_is_cgi(struct lws *wsi) {
 #endif
 }
 
+const struct lws_protocol_vhost_options *
+lws_pvo_search(const struct lws_protocol_vhost_options *pvo, const char *name)
+{
+	while (pvo) {
+		if (!strcmp(pvo->name, name))
+			break;
 
+		pvo = pvo->next;
+	}
+
+	return pvo;
+}
 
 #ifdef LWS_NO_EXTENSIONS
 LWS_EXTERN int
@@ -3131,7 +3210,7 @@ lws_stats_log_dump(struct lws_context *context)
 
 		lwsl_notice("PT %d\n", n + 1);
 
-		lws_pt_lock(pt);
+		lws_pt_lock(pt, __func__);
 
 		lwsl_notice("  AH in use / max:                  %d / %d\n",
 				pt->ah_count_in_use,
@@ -3193,23 +3272,23 @@ void
 lws_stats_atomic_bump(struct lws_context * context,
 		struct lws_context_per_thread *pt, int index, uint64_t bump)
 {
-	lws_pt_lock(pt);
+	lws_pt_stats_lock(pt);
 	context->lws_stats[index] += bump;
 	if (index != LWSSTATS_C_SERVICE_ENTRY)
 		context->updated = 1;
-	lws_pt_unlock(pt);
+	lws_pt_stats_unlock(pt);
 }
 
 void
 lws_stats_atomic_max(struct lws_context * context,
 		struct lws_context_per_thread *pt, int index, uint64_t val)
 {
-	lws_pt_lock(pt);
+	lws_pt_stats_lock(pt);
 	if (val > context->lws_stats[index]) {
 		context->lws_stats[index] = val;
 		context->updated = 1;
 	}
-	lws_pt_unlock(pt);
+	lws_pt_stats_unlock(pt);
 }
 
 #endif

@@ -145,7 +145,7 @@ file_upload_cb(void *data, const char *name, const char *filename,
 
 	switch (state) {
 	case LWS_UFS_OPEN:
-		strncpy(pss->filename, filename, sizeof(pss->filename) - 1);
+		lws_strncpy(pss->filename, filename, sizeof(pss->filename) - 1);
 		/* we get the original filename in @filename arg, but for
 		 * simple demo use a fixed name so we don't have to deal with
 		 * attacks  */
@@ -219,10 +219,10 @@ int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 						     WSI_TOKEN_HTTP_URI_ARGS, n) > 0) {
 				lwsl_notice("URI Arg %d: %s\n", ++n, buf);
 			}
-		}
 
-		if (lws_get_peer_simple(wsi, buf, sizeof(buf)))
-			lwsl_info("HTTP connect from %s\n", buf);
+			if (lws_get_peer_simple(wsi, buf, sizeof(buf)))
+				lwsl_info("HTTP connect from %s\n", buf);
+		}
 
 		if (len < 1) {
 			lws_return_http_status(wsi,
@@ -612,7 +612,7 @@ int callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 				goto bail;
 			}
 			if (m) /* while still active, extend timeout */
-				lws_set_timeout(wsi, PENDING_TIMEOUT_HTTP_CONTENT, 5);
+				lws_set_timeout(wsi, PENDING_TIMEOUT_HTTP_CONTENT, 30);
 			sent += m;
 
 		} while (!lws_send_pipe_choked(wsi) && (sent < 1024 * 1024));
