@@ -129,8 +129,7 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
       }
     }
 
-    struct lws_reference* lws_reference = (struct lws_reference*)lws_malloc(sizeof(struct lws_reference),
-									    "container");
+    struct lws_reference* lws_reference = (struct lws_reference*)lws_malloc(sizeof(struct lws_reference), "container");
     struct userdata* userdata = (struct userdata*)lws_malloc(sizeof(struct userdata), "container");
     userdata->container = this;
     userdata->session_id = session_id;
@@ -158,9 +157,16 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
 }
 
 void Container::Service(int timeout) {
-  
+
   if (context_) {
-    lws_service(context_, timeout);    
+    lws_service(context_, timeout);
+  }
+}
+
+void Container::TriggerWorker() {
+
+  if (context_) {
+    lws_cancel_service(context_);
   }
 }
 
@@ -206,11 +212,11 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
   switch(reason) {
 
   case LWS_CALLBACK_CLIENT_ESTABLISHED:
-    observer_->OnConnect(session_id);
+    observer_->OnConnect(session_id, userdata->lws_reference);
     break;
 
   case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-    observer_->OnConnectError(session_id, (const char *)in, len);
+    observer_->OnConnectError(session_id,  userdata->lws_reference, (const char *)in, len);
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:

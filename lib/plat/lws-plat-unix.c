@@ -159,8 +159,7 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 	int n = -1, m, c;
 
 	/* stay dead once we are dead */
-
-	if (!context || !context->vhost_list)
+	if (!context)
 		return 1;
 
 	pt = &context->pt[tsi];
@@ -171,34 +170,62 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 	if (timeout_ms < 0)
 		goto faked_service;
 
-	lws_libev_run(context, tsi);
-	lws_libuv_run(context, tsi);
-	lws_libevent_run(context, tsi);
+	// --twinlife-- 180410
+	if (context->vhost_list) {
+		lws_libev_run(context, tsi);
+		lws_libuv_run(context, tsi);
+		lws_libevent_run(context, tsi);
+		if (!context->service_tid_detected) {
+			struct lws _lws;
 
-	if (!context->service_tid_detected) {
-		struct lws _lws;
+			memset(&_lws, 0, sizeof(_lws));
+			_lws.context = context;
 
-		memset(&_lws, 0, sizeof(_lws));
-		_lws.context = context;
+			context->service_tid_detected =
+			  context->vhost_list->protocols[0].callback(
+			 &_lws, LWS_CALLBACK_GET_THREAD_ID, NULL, NULL, 0);
+			context->service_tid = context->service_tid_detected;
+			context->service_tid_detected = 1;
+		}
 
-		context->service_tid_detected =
-			context->vhost_list->protocols[0].callback(
-			&_lws, LWS_CALLBACK_GET_THREAD_ID, NULL, NULL, 0);
-		context->service_tid = context->service_tid_detected;
-		context->service_tid_detected = 1;
-	}
-
-	/*
-	 * is there anybody with pending stuff that needs service forcing?
-	 */
-	if (!lws_service_adjust_timeout(context, 1, tsi)) {
-		/* -1 timeout means just do forced service */
-		_lws_plat_service_tsi(context, -1, pt->tid);
-		/* still somebody left who wants forced service? */
-		if (!lws_service_adjust_timeout(context, 1, pt->tid))
+		/*
+		 * is there anybody with pending stuff that needs service forcing?
+		 */
+		if (!lws_service_adjust_timeout(context, 1, tsi)) {
+			/* -1 timeout means just do forced service */
+		  _lws_plat_service_tsi(context, -1, pt->tid);
+		  /* still somebody left who wants forced service? */
+		  if (!lws_service_adjust_timeout(context, 1, pt->tid))
 			/* yes... come back again quickly */
 			timeout_ms = 0;
+		}
+
+		if (timeout_ms > 0) {
+			int timeout = timeout_ms / 1000;
+			struct lws_context_per_thread* context_per_thread = &context->pt[0];
+			lws_pt_lock(context_per_thread, __func__);
+			struct lws* wsi = context_per_thread->timeout_list;
+			time_t now;
+			time(&now);
+			while (wsi) {
+				if (wsi->pending_timeout) {
+					int delta = lws_compare_time_t(wsi->context, now, wsi->pending_timeout_set);
+					if (delta + timeout > wsi->pending_timeout_limit) {
+						if (delta > wsi->pending_timeout_limit) {
+							timeout = 0;
+						} else {
+							timeout = wsi->pending_timeout_limit - delta;
+						}
+					}
+				}
+				wsi = wsi->timeout_list;
+			}
+			lws_pt_unlock(context_per_thread);
+
+			timeout_ms = timeout * 1000;
+		}
 	}
+	// --twinlife-- 180410
 
 	vpt->inside_poll = 1;
 	lws_memory_barrier();

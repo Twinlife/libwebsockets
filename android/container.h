@@ -37,6 +37,8 @@ class Container {
 
   void Service(int timeout);
 
+  void TriggerWorker();
+
   void TriggerWritable(struct lws_reference* lws_reference);
   
   void SendMessage(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary);

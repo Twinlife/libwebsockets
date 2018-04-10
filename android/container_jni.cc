@@ -19,10 +19,8 @@ namespace websocket {
 namespace jni {
 
 jlong CreateContainerForJava(JNIEnv* jni,
-			     jobject joptions,
 			     jobject j_observer) {
 
-  // options
   return webrtc::jni::jlongFromPointer(new Container(new ObserverJni(jni, j_observer)));
 }
   
@@ -30,10 +28,9 @@ JNI_FUNCTION_DECLARATION(jlong,
 			 ContainerImpl_nativeCreateContainer,
 			 JNIEnv* jni,
 			 jclass,
-			 jobject joptions,
 			 jobject j_observer) {
 
-  return CreateContainerForJava(jni, joptions, j_observer);
+  return CreateContainerForJava(jni, j_observer);
 }
 
 JNI_FUNCTION_DECLARATION(jlong,
@@ -101,7 +98,7 @@ JNI_FUNCTION_DECLARATION(jlong,
 }
 
 JNI_FUNCTION_DECLARATION(void,
-			 ContainerImpl_nativeFreeReference,
+			 ContainerImpl_nativeDisposeWebSocket,
 			 JNIEnv* jni,
                          jclass,
                          jlong container_p,
@@ -132,6 +129,16 @@ JNI_FUNCTION_DECLARATION(void,
   Container* container = reinterpret_cast<Container*>(container_p);
   struct lws_reference* lws_reference = reinterpret_cast<struct lws_reference*>(lws_reference_p);
   container->TriggerWritable(lws_reference);
+}
+
+JNI_FUNCTION_DECLARATION(void,
+			 ContainerImpl_nativeTriggerWorker,
+			 JNIEnv* jni,
+                         jclass,
+                         jlong container_p) {
+
+  Container* container = reinterpret_cast<Container*>(container_p);
+  container->TriggerWorker();
 }
 
 JNI_FUNCTION_DECLARATION(void,
