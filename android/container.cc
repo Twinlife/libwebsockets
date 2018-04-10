@@ -216,20 +216,20 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     break;
 
   case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-    observer_->OnConnectError(session_id,  userdata->lws_reference, (const char *)in, len);
+    observer_->OnConnectError(session_id, userdata->lws_reference, (const char *)in, len);
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:
-    observer_->OnWritable(session_id);
+    observer_->OnWritable(session_id, userdata->lws_reference);
     break;
     
   case LWS_CALLBACK_CLIENT_RECEIVE:
-    observer_->OnReceive(session_id, in, len, false);
+    observer_->OnReceive(session_id, userdata->lws_reference, in, len, false);
     break;
 
   case LWS_CALLBACK_CLIENT_CLOSED:
   case LWS_CALLBACK_CLOSED:
-    observer_->OnClose(session_id);
+    observer_->OnClose(session_id, userdata->lws_reference);
     break;
 
   case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:
@@ -261,7 +261,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 	  }
 
 	  if (common_name && bytes && length > 0) {
-	    verify_ok = observer_->OnVerify(session_id, common_name, bytes, length);
+	    verify_ok = observer_->OnVerify(session_id, userdata->lws_reference, common_name, bytes, length);
 	  }
 	  if (bytes) {
 	    OPENSSL_free(bytes);
