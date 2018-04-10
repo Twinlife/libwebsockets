@@ -33,13 +33,13 @@ class ObserverJni {
 
   void OnConnectError(long session_id, struct lws_reference* lws_reference, const char* diagnostic, size_t length);
   
-  void OnWritable(long session_id);
+  void OnWritable(long session_id, struct lws_reference* lws_reference);
 
-  void OnReceive(long session_id, void* message, size_t length, bool binary);
+  void OnReceive(long session_id, struct lws_reference* lws_reference, void* message, size_t length, bool binary);
 
-  void OnClose(long session_id);
+  void OnClose(long session_id, struct lws_reference* lws_reference);
 
-  bool OnVerify(long session_id, const char* common_name, void* bytes, size_t length);
+  bool OnVerify(long session_id, struct lws_reference* lws_reference, const char* common_name, void* bytes, size_t length);
 
  private:  
   const webrtc::jni::ScopedGlobalRef<jobject> j_observer_global_;

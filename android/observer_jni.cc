@@ -23,12 +23,12 @@ ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
     j_on_connect_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onConnect", "(JJ)V")),
     j_on_connect_error_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onConnectError",
 						 "(JJLjava/lang/String;)V")),
-    j_on_writable_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onWritable", "(J)V")),
+    j_on_writable_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onWritable", "(JJ)V")),
     j_on_message_(webrtc::jni::GetMethodID(jni, *j_observer_class_,
-					   "onMessage", "(JLjava/nio/ByteBuffer;Z)V")),
-    j_on_close_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onClose", "(J)V")),
+					   "onMessage", "(JJLjava/nio/ByteBuffer;Z)V")),
+    j_on_close_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onClose", "(JJ)V")),
     j_on_verify_(webrtc::jni::GetMethodID(jni, *j_observer_class_, "onVerify",
-					  "(JLjava/lang/String;[B)Z")) {
+					  "(JJLjava/lang/String;[B)Z")) {
 }
 
 ObserverJni::~ObserverJni() {
@@ -54,32 +54,32 @@ void ObserverJni::OnConnectError(long session_id, struct lws_reference* lws_refe
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnWritable(long session_id) {
+void ObserverJni::OnWritable(long session_id, struct lws_reference* lws_reference) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
-  env->CallVoidMethod(*j_observer_global_, j_on_writable_, session_id);
+  env->CallVoidMethod(*j_observer_global_, j_on_writable_, session_id, webrtc::jni::jlongFromPointer(lws_reference));
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";  
 }  
 
-void ObserverJni::OnReceive(long session_id, void* message, size_t length, bool binary) {
+void ObserverJni::OnReceive(long session_id, struct lws_reference* lws_reference, void* message, size_t length, bool binary) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
   jobject j_message = env->NewDirectByteBuffer(message, length);
-  env->CallVoidMethod(*j_observer_global_, j_on_message_, session_id, j_message, binary);
+  env->CallVoidMethod(*j_observer_global_, j_on_message_, session_id, webrtc::jni::jlongFromPointer(lws_reference), j_message, binary);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnClose(long session_id) {
+void ObserverJni::OnClose(long session_id, struct lws_reference* lws_reference) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
-  env->CallVoidMethod(*j_observer_global_, j_on_close_, session_id);
+  env->CallVoidMethod(*j_observer_global_, j_on_close_, session_id, webrtc::jni::jlongFromPointer(lws_reference));
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-bool ObserverJni::OnVerify(long session_id, const char* common_name, void* bytes, size_t length) {
+  bool ObserverJni::OnVerify(long session_id, struct lws_reference* lws_reference, const char* common_name, void* bytes, size_t length) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
@@ -87,7 +87,8 @@ bool ObserverJni::OnVerify(long session_id, const char* common_name, void* bytes
   CHECK_EXCEPTION(env) << "error during NewStringUTF";
   jbyteArray j_bytes = env->NewByteArray(length);
   env->SetByteArrayRegion(j_bytes, 0, length, (const jbyte*)bytes);
-  bool verify = env->CallBooleanMethod(*j_observer_global_, j_on_verify_, session_id, j_common_name, j_bytes);
+  bool verify = env->CallBooleanMethod(*j_observer_global_, j_on_verify_, session_id, webrtc::jni::jlongFromPointer(lws_reference),
+				       j_common_name, j_bytes);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
   return verify;
 }
