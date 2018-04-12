@@ -229,6 +229,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 
   case LWS_CALLBACK_CLIENT_CLOSED:
   case LWS_CALLBACK_CLOSED:
+    userdata->lws_reference->wsi = NULL;
     observer_->OnClose(session_id, userdata->lws_reference);
     break;
 

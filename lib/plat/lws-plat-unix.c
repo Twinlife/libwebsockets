@@ -202,14 +202,13 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 
 		if (timeout_ms > 0) {
 			int timeout = timeout_ms / 1000;
-			struct lws_context_per_thread* context_per_thread = &context->pt[0];
-			lws_pt_lock(context_per_thread, __func__);
-			struct lws* wsi = context_per_thread->timeout_list;
+			lws_pt_lock(vpt, __func__);
+			struct lws* wsi = vpt->timeout_list;
 			time_t now;
 			time(&now);
 			while (wsi) {
 				if (wsi->pending_timeout) {
-					int delta = lws_compare_time_t(wsi->context, now, wsi->pending_timeout_set);
+					int delta = lws_compare_time_t(context, now, wsi->pending_timeout_set);
 					if (delta + timeout > wsi->pending_timeout_limit) {
 						if (delta > wsi->pending_timeout_limit) {
 							timeout = 0;
@@ -220,9 +219,11 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 				}
 				wsi = wsi->timeout_list;
 			}
-			lws_pt_unlock(context_per_thread);
+			lws_pt_unlock(vpt);
 
-			timeout_ms = timeout * 1000;
+			if (timeout < timeout_ms / 1000) {
+			  timeout_ms = timeout * 1000;
+			}
 		}
 	}
 	// --twinlife-- 180410
