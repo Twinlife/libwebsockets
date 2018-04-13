@@ -34,15 +34,15 @@ ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
 ObserverJni::~ObserverJni() {
 }  
 
-void ObserverJni::OnConnect(long session_id, struct lws_reference* lws_reference) {
+void ObserverJni::OnConnect(jlong session_id, jlong websocket_id) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
-  env->CallVoidMethod(*j_observer_global_, j_on_connect_, session_id, webrtc::jni::jlongFromPointer(lws_reference));
+  env->CallVoidMethod(*j_observer_global_, j_on_connect_, session_id, websocket_id);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnConnectError(long session_id, struct lws_reference* lws_reference, const char* diagnostic, size_t length) {
+void ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
@@ -50,36 +50,36 @@ void ObserverJni::OnConnectError(long session_id, struct lws_reference* lws_refe
   if (diagnostic) {
     j_diagnostic = webrtc::jni::NativeToJavaString(env, std::string(diagnostic));
   }
-  env->CallVoidMethod(*j_observer_global_, j_on_connect_error_, session_id, webrtc::jni::jlongFromPointer(lws_reference), j_diagnostic);
+  env->CallVoidMethod(*j_observer_global_, j_on_connect_error_, session_id, websocket_id, j_diagnostic);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnWritable(long session_id, struct lws_reference* lws_reference) {
+void ObserverJni::OnWritable(jlong session_id, jlong websocket_id) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
-  env->CallVoidMethod(*j_observer_global_, j_on_writable_, session_id, webrtc::jni::jlongFromPointer(lws_reference));
+  env->CallVoidMethod(*j_observer_global_, j_on_writable_, session_id, websocket_id);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";  
 }  
 
-void ObserverJni::OnReceive(long session_id, struct lws_reference* lws_reference, void* message, size_t length, bool binary) {
+void ObserverJni::OnReceive(jlong session_id, jlong websocket_id, void* message, size_t length, bool binary) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
   jobject j_message = env->NewDirectByteBuffer(message, length);
-  env->CallVoidMethod(*j_observer_global_, j_on_message_, session_id, webrtc::jni::jlongFromPointer(lws_reference), j_message, binary);
+  env->CallVoidMethod(*j_observer_global_, j_on_message_, session_id, websocket_id, j_message, binary);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnClose(long session_id, struct lws_reference* lws_reference) {
+void ObserverJni::OnClose(jlong session_id, jlong websocket_id) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
-  env->CallVoidMethod(*j_observer_global_, j_on_close_, session_id, webrtc::jni::jlongFromPointer(lws_reference));
+  env->CallVoidMethod(*j_observer_global_, j_on_close_, session_id, websocket_id);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-  bool ObserverJni::OnVerify(long session_id, struct lws_reference* lws_reference, const char* common_name, void* bytes, size_t length) {
+bool ObserverJni::OnVerify(jlong session_id, jlong websocket_id, const char* common_name, void* bytes, size_t length) {
 
   JNIEnv* env = webrtc_jni::AttachCurrentThreadIfNeeded();
   webrtc::jni::ScopedLocalRefFrame local_ref_frame(env);
@@ -87,8 +87,7 @@ void ObserverJni::OnClose(long session_id, struct lws_reference* lws_reference) 
   CHECK_EXCEPTION(env) << "error during NewStringUTF";
   jbyteArray j_bytes = env->NewByteArray(length);
   env->SetByteArrayRegion(j_bytes, 0, length, (const jbyte*)bytes);
-  bool verify = env->CallBooleanMethod(*j_observer_global_, j_on_verify_, session_id, webrtc::jni::jlongFromPointer(lws_reference),
-				       j_common_name, j_bytes);
+  bool verify = env->CallBooleanMethod(*j_observer_global_, j_on_verify_, session_id, websocket_id, j_common_name, j_bytes);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
   return verify;
 }

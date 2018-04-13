@@ -29,17 +29,17 @@ class ObserverJni {
 
   ~ObserverJni();
 
-  void OnConnect(long session_id, struct lws_reference* lws_reference);
+  void OnConnect(jlong session_id, jlong websocket_id);
 
-  void OnConnectError(long session_id, struct lws_reference* lws_reference, const char* diagnostic, size_t length);
+  void OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length);
   
-  void OnWritable(long session_id, struct lws_reference* lws_reference);
+  void OnWritable(jlong session_id, jlong websocket_id);
 
-  void OnReceive(long session_id, struct lws_reference* lws_reference, void* message, size_t length, bool binary);
+  void OnReceive(jlong session_id, jlong websocket_id, void* message, size_t length, bool binary);
 
-  void OnClose(long session_id, struct lws_reference* lws_reference);
+  void OnClose(jlong session_id, jlong websocket_id);
 
-  bool OnVerify(long session_id, struct lws_reference* lws_reference, const char* common_name, void* bytes, size_t length);
+  bool OnVerify(jlong session_id, jlong websocket_id, const char* common_name, void* bytes, size_t length);
 
  private:  
   const webrtc::jni::ScopedGlobalRef<jobject> j_observer_global_;

@@ -206,31 +206,44 @@ void Container::SendCloseMessage(struct lws_reference* lws_reference) {
   
 int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
-  struct userdata* userdata = (struct userdata*)wsi->user_space;
-  long session_id = userdata->session_id;
+  struct userdata* userdata = NULL;
+  jlong session_id = 0;
+  jlong websocket_id = 0;
+  if (wsi) {
+    userdata = (struct userdata*)wsi->user_space;
+    if (userdata) {
+      session_id = userdata->session_id;
+      struct lws_reference* lws_reference = userdata->lws_reference;
+      if (lws_reference) {
+	websocket_id = webrtc::jni::jlongFromPointer(lws_reference);
+      }
+    }
+  }
 
   switch(reason) {
 
   case LWS_CALLBACK_CLIENT_ESTABLISHED:
-    observer_->OnConnect(session_id, userdata->lws_reference);
+    observer_->OnConnect(session_id, websocket_id);
     break;
 
   case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-    observer_->OnConnectError(session_id, userdata->lws_reference, (const char *)in, len);
+    observer_->OnConnectError(session_id, websocket_id, (const char *)in, len);
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:
-    observer_->OnWritable(session_id, userdata->lws_reference);
+    observer_->OnWritable(session_id, websocket_id);
     break;
     
   case LWS_CALLBACK_CLIENT_RECEIVE:
-    observer_->OnReceive(session_id, userdata->lws_reference, in, len, false);
+    observer_->OnReceive(session_id, websocket_id, in, len, false);
     break;
 
   case LWS_CALLBACK_CLIENT_CLOSED:
   case LWS_CALLBACK_CLOSED:
-    userdata->lws_reference->wsi = NULL;
-    observer_->OnClose(session_id, userdata->lws_reference);
+    if (userdata && userdata->lws_reference) {
+      userdata->lws_reference->wsi = NULL;
+    }
+    observer_->OnClose(session_id, websocket_id);
     break;
 
   case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:
@@ -262,7 +275,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 	  }
 
 	  if (common_name && bytes && length > 0) {
-	    verify_ok = observer_->OnVerify(session_id, userdata->lws_reference, common_name, bytes, length);
+	    verify_ok = observer_->OnVerify(session_id, websocket_id, common_name, bytes, length);
 	  }
 	  if (bytes) {
 	    OPENSSL_free(bytes);
