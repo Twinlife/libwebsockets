@@ -109,7 +109,7 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
 	strncpy(vhost->http_proxy_address, proxy_address, sizeof(vhost->http_proxy_address) - 1);
 	vhost->http_proxy_address[sizeof(vhost->http_proxy_address) - 1] = '\0';
 	if (proxy_username && proxy_password) {
-	  char *auth_token = (char *)lws_malloc(strlen(proxy_username) + strlen(proxy_password) + 1,
+	  char *auth_token = (char *)lws_malloc(strlen(proxy_username) + strlen(proxy_password) + 2,
 						"container");
 	  strcpy(auth_token, proxy_username);
 	  strcat(auth_token, ":");
