@@ -32,7 +32,6 @@ namespace jni {
 struct userdata {
   Container* container;
   jlong session_id;
-  struct lws_reference* lws_reference;
   bool root_certificate_verified;
 };
 
@@ -91,15 +90,18 @@ Container::Container(ObserverJni* observer) {
   info_.ws_ping_pong_interval = PING_PONG_INTERVAL;
 
   context_ = lws_create_context(&info_);
+
+  pthread_mutex_init(&jni_lws_list_mutex_, NULL);
+  jni_lws_list_ = NULL;
 }
 
 Container::~Container() {
+
+  pthread_mutex_destroy(&jni_lws_list_mutex_);
 }  
 
-struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, const char* host,
-						 const char* path, bool secure,
-						 const char* proxy_address, int proxy_port,
-						 const char* proxy_username, const char* proxy_password) {
+jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, const char* path, bool secure,
+				 const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password) {
 
   if (context_) {
     struct lws_vhost* vhost = lws_create_vhost(context_, &info_);
@@ -129,11 +131,9 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
       }
     }
 
-    struct lws_reference* lws_reference = (struct lws_reference*)lws_malloc(sizeof(struct lws_reference), "container");
     struct userdata* userdata = (struct userdata*)lws_malloc(sizeof(struct userdata), "container");
     userdata->container = this;
     userdata->session_id = session_id;
-    userdata->lws_reference = lws_reference;
     userdata->root_certificate_verified = false;
 
     struct lws_client_connect_info info_ws;
@@ -150,10 +150,16 @@ struct lws_reference* Container::CreateWebSocket(jlong session_id, int port, con
     info_ws.userdata = userdata;
     info_ws.vhost = vhost;
 
-    lws_reference->wsi = lws_client_connect_via_info(&info_ws);
-    return lws_reference;
+    struct lws *wsi = lws_client_connect_via_info(&info_ws);
+    pthread_mutex_lock(&jni_lws_list_mutex_);
+    wsi->jni_lws_list = jni_lws_list_;
+    jni_lws_list_ = wsi;
+    pthread_mutex_unlock(&jni_lws_list_mutex_);
+
+    return webrtc::jni::jlongFromPointer(wsi);
   }
-  return NULL;
+
+  return 0;
 }
 
 void Container::Service(int timeout) {
@@ -170,28 +176,41 @@ void Container::TriggerWorker() {
   }
 }
 
-void Container::TriggerWritable(struct lws_reference* lws_reference) {
+void Container::TriggerWritable(jlong websocket_id) {
 
   if (context_) {
-    struct lws* wsi = lws_reference->wsi;
-    if (wsi) {
-      lws_callback_on_writable(wsi);
+    struct lws* wsi = reinterpret_cast<struct lws*>(websocket_id);
+    //
+    // Called in the notification thread
+    // Lock mutex to avoid race condition with wsi deletion in the service thread
+    //
+    pthread_mutex_lock(&jni_lws_list_mutex_);
+    struct lws* current_wsi = jni_lws_list_;
+    while (current_wsi) {
+      if (current_wsi == wsi) {
+	lws_callback_on_writable(wsi);
+	break;
+      }
+      current_wsi = current_wsi->jni_lws_list;
     }
+    pthread_mutex_unlock(&jni_lws_list_mutex_);
   }
 }  
 
-void Container::SendMessage(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary) {
+void Container::SendMessage(jlong websocket_id, void* buffer, size_t length, bool binary) {
 
-  struct lws* wsi = lws_reference->wsi;
-  if (wsi) {
-    lws_write(wsi, (unsigned char *)buffer, length, LWS_WRITE_TEXT);
+  if (context_) {
+    struct lws* wsi = get_lws_from_websocket_id(websocket_id);
+    if (wsi) {
+      lws_write(wsi, (unsigned char *)buffer, length, LWS_WRITE_TEXT);
+    }
   }
 }
 
-void Container::SendCloseMessage(struct lws_reference* lws_reference) {
+void Container::SendCloseMessage(jlong websocket_id) {
 
   if (context_) {
-    struct lws* wsi = lws_reference->wsi;
+    struct lws* wsi = get_lws_from_websocket_id(websocket_id);
     if (wsi) {
       lws_close_status status = LWS_CLOSE_STATUS_GOINGAWAY;
       unsigned char buffer[2 + LWS_SEND_BUFFER_PRE_PADDING + LWS_SEND_BUFFER_POST_PADDING];
@@ -210,13 +229,10 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
   jlong session_id = 0;
   jlong websocket_id = 0;
   if (wsi) {
+    websocket_id = webrtc::jni::jlongFromPointer(wsi);
     userdata = (struct userdata*)wsi->user_space;
     if (userdata) {
       session_id = userdata->session_id;
-      struct lws_reference* lws_reference = userdata->lws_reference;
-      if (lws_reference) {
-	websocket_id = webrtc::jni::jlongFromPointer(lws_reference);
-      }
     }
   }
 
@@ -240,9 +256,6 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 
   case LWS_CALLBACK_CLIENT_CLOSED:
   case LWS_CALLBACK_CLOSED:
-    if (userdata && userdata->lws_reference) {
-      userdata->lws_reference->wsi = NULL;
-    }
     observer_->OnClose(session_id, websocket_id);
     break;
 
@@ -292,11 +305,53 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     }
     break;
 
+  case LWS_CALLBACK_WSI_DESTROY: {
+    if (wsi->vhost) {
+      lws_vhost_destroy(wsi->vhost);
+      wsi->vhost = NULL;
+    }
+
+    pthread_mutex_lock(&jni_lws_list_mutex_);
+    struct lws* current_wsi = jni_lws_list_;
+    struct lws* previous_wsi = NULL;
+    while (current_wsi) {
+      if (current_wsi == wsi) {
+	if (previous_wsi) {
+	  previous_wsi->jni_lws_list = current_wsi->jni_lws_list;
+	} else {
+	  jni_lws_list_ = current_wsi->jni_lws_list;
+	}
+	break;
+      }
+      previous_wsi = current_wsi;
+      current_wsi = current_wsi->jni_lws_list;
+    }
+    pthread_mutex_unlock(&jni_lws_list_mutex_);
+    break;
+  }
+
   default:
     break;
   }
 
   return 0;
+}
+
+struct lws *Container::get_lws_from_websocket_id(jlong websocket_id) {
+
+  struct lws* wsi = reinterpret_cast<struct lws*>(websocket_id);
+  pthread_mutex_lock(&jni_lws_list_mutex_);
+  struct lws* current_wsi = jni_lws_list_;
+  bool found = 0;
+  while (current_wsi) {
+    if (current_wsi == wsi) {
+      found = 1;
+      break;
+    }
+    current_wsi = current_wsi->jni_lws_list;
+  }
+  pthread_mutex_unlock(&jni_lws_list_mutex_);
+  return found ? wsi : NULL;
 }
   
 }  // namespace jni

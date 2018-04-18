@@ -19,10 +19,6 @@ extern "C" {
 namespace websocket {
 namespace jni {
 
-struct lws_reference {
-  struct lws* wsi;
-};
-
 class ObserverJni;
  
 class Container {
@@ -31,19 +27,18 @@ class Container {
 
   ~Container();
 
-  struct lws_reference* CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
-					bool secure, const char* proxy_address, int proxy_port,
-					const char* proxy_username, const char* proxy_password);
+  jlong CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
+			bool secure, const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password);
 
   void Service(int timeout);
 
   void TriggerWorker();
 
-  void TriggerWritable(struct lws_reference* lws_reference);
+  void TriggerWritable(jlong websocket_id);
   
-  void SendMessage(struct lws_reference* lws_reference, void* buffer, size_t length, bool binary);
+  void SendMessage(jlong websocket_id, void* buffer, size_t length, bool binary);
 
-  void SendCloseMessage(struct lws_reference* lws_reference);
+  void SendCloseMessage(jlong websocket_id);
   
   int Callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len);
   
@@ -51,6 +46,10 @@ class Container {
   ObserverJni* observer_;
   lws_context_creation_info info_;
   lws_context* context_;
+  pthread_mutex_t jni_lws_list_mutex_;
+  struct lws *jni_lws_list_;
+
+  struct lws *get_lws_from_websocket_id(jlong websocket_id);
 };
 
 }  // namespace jni

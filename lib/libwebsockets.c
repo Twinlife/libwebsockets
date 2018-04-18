@@ -922,13 +922,6 @@ __lws_close_free_wsi_final(struct lws *wsi)
 		wsi->vhost->protocols[0].callback(wsi, LWS_CALLBACK_WSI_DESTROY,
 						  wsi->user_space, NULL, 0);
 
-// --twinlife-- 180221
-	if (wsi->vhost) {
-		lws_vhost_destroy(wsi->vhost);
-		wsi->vhost = NULL;
-	}
-// --twinlife-- 180221
-
 #ifdef LWS_WITH_CGI
 	if (wsi->cgi) {
 

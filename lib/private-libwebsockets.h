@@ -1869,6 +1869,9 @@ struct lws {
 #ifdef LWS_WITH_CGI
 	struct lws_cgi *cgi; /* wsi being cgi master have one of these */
 #endif
+// --twinlife-- 180417
+	struct lws *jni_lws_list;
+// --twinlife-- 180417
 	const struct lws_protocols *protocol;
 	struct lws **same_vh_protocol_prev, *same_vh_protocol_next;
 	/* we get on the list if either the timeout or the timer is valid */
