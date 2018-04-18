@@ -151,12 +151,10 @@ jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, c
     info_ws.vhost = vhost;
 
     struct lws *wsi = lws_client_connect_via_info(&info_ws);
-    pthread_mutex_lock(&jni_lws_list_mutex_);
-    wsi->jni_lws_list = jni_lws_list_;
-    jni_lws_list_ = wsi;
-    pthread_mutex_unlock(&jni_lws_list_mutex_);
-
-    return webrtc::jni::jlongFromPointer(wsi);
+    if (wsi) {
+      return webrtc::jni::jlongFromPointer(wsi);
+    }
+    return 0;
   }
 
   return 0;
@@ -234,6 +232,8 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     if (userdata) {
       session_id = userdata->session_id;
     }
+  } else {
+    return 0;
   }
 
   switch(reason) {
@@ -303,6 +303,13 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 	}
       }
     }
+    break;
+
+  case LWS_CALLBACK_WSI_CREATE:
+    pthread_mutex_lock(&jni_lws_list_mutex_);
+    wsi->jni_lws_list = jni_lws_list_;
+    jni_lws_list_ = wsi;
+    pthread_mutex_unlock(&jni_lws_list_mutex_);
     break;
 
   case LWS_CALLBACK_WSI_DESTROY: {
