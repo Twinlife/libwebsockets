@@ -14,7 +14,7 @@
 #include <memory>
 #include <utility>
 
-#include "sdk/android/src/jni/jni_helpers.h"
+#include "jni_helpers.h"
 
 extern "C" {
   struct lws;
@@ -42,8 +42,8 @@ class ObserverJni {
   bool OnVerify(jlong session_id, jlong websocket_id, const char* common_name, void* bytes, size_t length);
 
  private:  
-  const webrtc::jni::ScopedGlobalRef<jobject> j_observer_global_;
-  const webrtc::jni::ScopedGlobalRef<jclass> j_observer_class_;
+  const ScopedGlobalRef<jobject> j_observer_global_;
+  const ScopedGlobalRef<jclass> j_observer_class_;
   const jmethodID j_on_connect_;
   const jmethodID j_on_connect_error_;
   const jmethodID j_on_writable_;  
