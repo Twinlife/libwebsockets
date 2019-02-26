@@ -1,10 +1,11 @@
 /*
- *  Copyright (c) 2018 twinlife SA.
+ *  Copyright (c) 2018-2019 twinlife SA.
  *
  *  All Rights Reserved.
  *  
  *  Contributors: 
  *   Christian Jacquemot (Christian.Jacquemot@twinlife-systems.com)
+ *   Stephane Carrez (Stephane.Carrez@twin.life)
  */
 
 #include <android/log.h>
@@ -247,8 +248,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:
-    observer_->OnWritable(session_id, websocket_id);
-    break;
+    return observer_->OnWritable(session_id, websocket_id) ? 0 : -1;
     
   case LWS_CALLBACK_CLIENT_RECEIVE:
     observer_->OnReceive(session_id, websocket_id, in, len, false);

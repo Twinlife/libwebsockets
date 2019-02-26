@@ -1,10 +1,11 @@
 /*
- *  Copyright (c) 2018 twinlife SA.
+ *  Copyright (c) 2018-2019 twinlife SA.
  *
  *  All Rights Reserved.
  *  
  *  Contributors: 
  *   Christian Jacquemot (Christian.Jacquemot@twinlife-systems.com)
+ *   Stephane Carrez (Stephane.Carrez@twin.life)
  */
 
 #ifndef WEBSOCKET_ANDROID_OBSERVER_JNI_H_
@@ -33,7 +34,7 @@ class ObserverJni {
 
   void OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length);
   
-  void OnWritable(jlong session_id, jlong websocket_id);
+  bool OnWritable(jlong session_id, jlong websocket_id);
 
   void OnReceive(jlong session_id, jlong websocket_id, void* message, size_t length, bool binary);
 

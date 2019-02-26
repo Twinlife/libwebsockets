@@ -1,10 +1,11 @@
 /*
- *  Copyright (c) 2018 twinlife SA.
+ *  Copyright (c) 2018-2019 twinlife SA.
  *
  *  All Rights Reserved.
  *  
  *  Contributors: 
  *   Christian Jacquemot (Christian.Jacquemot@twinlife-systems.com)
+ *   Stephane Carrez (Stephane.Carrez@twin.life)
  */
 
 #include "observer_jni.h"
@@ -22,7 +23,7 @@ ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
     j_observer_class_(jni, GetObjectClass(jni, *j_observer_global_)),
     j_on_connect_(GetMethodID(jni, *j_observer_class_, "onConnect", "(JJ)V")),
     j_on_connect_error_(GetMethodID(jni, *j_observer_class_, "onConnectError", "(JJLjava/lang/String;)V")),
-    j_on_writable_(GetMethodID(jni, *j_observer_class_, "onWritable", "(JJ)V")),
+    j_on_writable_(GetMethodID(jni, *j_observer_class_, "onWritable", "(JJ)Z")),
     j_on_message_(GetMethodID(jni, *j_observer_class_, "onMessage", "(JJLjava/nio/ByteBuffer;Z)V")),
     j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(JJ)V")),
     j_on_verify_(GetMethodID(jni, *j_observer_class_, "onVerify", "(JJLjava/lang/String;[B)Z")) {
@@ -51,12 +52,13 @@ void ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const cha
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnWritable(jlong session_id, jlong websocket_id) {
+bool ObserverJni::OnWritable(jlong session_id, jlong websocket_id) {
 
   JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
   ScopedLocalRefFrame local_ref_frame(env);
-  env->CallVoidMethod(*j_observer_global_, j_on_writable_, session_id, websocket_id);
-  CHECK_EXCEPTION(env) << "error during CallVoidMethod";  
+  bool result = env->CallBooleanMethod(*j_observer_global_, j_on_writable_, session_id, websocket_id);
+  CHECK_EXCEPTION(env) << "error during CallBooleanMethod";
+  return result;
 }  
 
 void ObserverJni::OnReceive(jlong session_id, jlong websocket_id, void* message, size_t length, bool binary) {
