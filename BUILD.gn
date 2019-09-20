@@ -44,6 +44,8 @@ static_library("libwebsockets") {
     "LWS_OPENSSL_SUPPORT",
     "LWS_OPENSSL_CLIENT_CERTS=\"/system/etc/security/cacerts\"",
     "LWS_NO_DAEMONIZE",
+    "LWS_IPV6",
+    "LWS_WITH_IPV6",
     "LWS_MAX_SMP=1",
     "LWS_BUILTIN_GETIFADDRS",
     "LWS_HAVE_STDINT_H",
