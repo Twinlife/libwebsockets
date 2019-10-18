@@ -219,6 +219,15 @@ _lws_plat_service_tsi(struct lws_context *context, int timeout_ms, int tsi)
 				}
 				wsi = wsi->timeout_list;
 			}
+			// --twinlife-- 191018
+			// When the last_timeout_check_s is the current time, lws_service_fd_tsi() will not handle
+			// connection timeouts and we will loop forever until both lws_service_fd_tsi() and
+			// _lws_plat_service_tsi() are executed in different seconds.  Force the check so that
+			// lws_service_fd_tsi() handles connection timeouts.
+			if (timeout == 0 && context->last_timeout_check_s == now) {
+				context->last_timeout_check_s = now - 1;
+			}
+			// --twinlife-- 191018
 			lws_pt_unlock(vpt);
 
 			if (timeout < timeout_ms / 1000) {
