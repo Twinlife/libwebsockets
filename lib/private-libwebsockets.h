@@ -2797,5 +2797,5 @@ int
 __lws_change_pollfd(struct lws *wsi, int _and, int _or);
 
 #ifdef __cplusplus
-};
+}
 #endif
