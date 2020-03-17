@@ -8,7 +8,9 @@
  *   Stephane Carrez (Stephane.Carrez@twin.life)
  */
 
-#include <android/log.h>
+#if defined(WEBRTC_ANDROID)
+#  include <android/log.h>
+#endif
 
 extern "C" {
 #include <libwebsockets.h>
@@ -61,6 +63,7 @@ static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* use
 }
 
 static void emit_log(int level, const char* msg) {
+#if defined(WEBRTC_ANDROID)  
   if (level == LLL_NOTICE || level == LLL_INFO) {
     __android_log_write(ANDROID_LOG_INFO, "lws", msg);
   } else if (level == LLL_WARN) {
@@ -70,6 +73,7 @@ static void emit_log(int level, const char* msg) {
   } else {
     __android_log_write(ANDROID_LOG_DEBUG, "lws", msg);
   }
+#endif
 }
 
 Container::Container(ObserverJni* observer) {

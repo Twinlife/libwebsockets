@@ -1,7 +1,9 @@
 #include <memory>
 #include <utility>
 
-#include <android/log.h>
+#if defined(WEBRTC_ANDROID)
+#  include <android/log.h>
+#endif
 
 #include "sdk/android/src/jni/jni_helpers.h"
 

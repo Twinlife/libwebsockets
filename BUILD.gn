@@ -59,10 +59,10 @@ static_library("libwebsockets") {
   ]
     
   sources = [
-    "android/container_jni.cc",
-    "android/container.cc",
-    "android/jni_helpers.cc",
-    "android/observer_jni.cc",
+    "jni/container_jni.cc",
+    "jni/container.cc",
+    "jni/jni_helpers.cc",
+    "jni/observer_jni.cc",
     "lib/alloc.c",
     "lib/context.c",
     "lib/handshake.c",
