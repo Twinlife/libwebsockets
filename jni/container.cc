@@ -205,7 +205,7 @@ void Container::SendMessage(jlong websocket_id, void* buffer, size_t length, boo
   if (context_) {
     struct lws* wsi = get_lws_from_websocket_id(websocket_id);
     if (wsi) {
-      lws_write(wsi, (unsigned char *)buffer, length, LWS_WRITE_TEXT);
+      lws_write(wsi, (unsigned char *)buffer, length, binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT);
     }
   }
 }
@@ -255,7 +255,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     return observer_->OnWritable(session_id, websocket_id) ? 0 : -1;
     
   case LWS_CALLBACK_CLIENT_RECEIVE:
-    observer_->OnReceive(session_id, websocket_id, in, len, false);
+    observer_->OnReceive(session_id, websocket_id, in, len, lws_frame_is_binary(wsi));
     break;
 
   case LWS_CALLBACK_CLIENT_CLOSED:
