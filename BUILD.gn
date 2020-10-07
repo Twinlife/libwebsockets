@@ -5,7 +5,7 @@ import("//build/config/android/rules.gni")
 config("libwebsockets_config") {
 }
 
-static_library("libwebsockets") {
+rtc_library("libwebsockets") {
   defines = [
     # lws_config_private.h
     "LWS_HAVE_DLFCN_H",
@@ -93,9 +93,9 @@ static_library("libwebsockets") {
     "lib/tls/openssl/openssl-server.c",    
     "lib/tls/openssl/ssl.c",    
   ]
-
  deps = [
     "//rtc_base:rtc_base",
     "//third_party/boringssl",    
   ]
+  absl_deps = [ "//third_party/abseil-cpp/absl/types:optional" ]
 }

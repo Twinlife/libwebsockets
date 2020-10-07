@@ -1369,3 +1369,12 @@ lws_generate_client_handshake(struct lws *wsi, char *pkt)
 
 	return p;
 }
+
+#if defined(WEBRTC_ARCH_ARM)
+char *
+stpcpy(char *dest, const char *src)
+{
+	size_t len = strlen(src);
+	return memcpy(dest, src, len + 1) + len;
+}
+#endif
