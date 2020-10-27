@@ -1,7 +1,7 @@
 Notes about coding with lws
 ===========================
 
-@section era Old lws and lws v2.0
+@section era Old lws and lws v2.0+
 
 Originally lws only supported the "manual" method of handling everything in the
 user callback found in test-server.c / test-server-http.c.
@@ -14,7 +14,7 @@ the URL space using mounts, the dummy http callback will do the right thing.
 It's much preferred to use the "automated" v2.0 type scheme, because it's less
 code and it's easier to support.
 
-You can see an example of the new way in test-server-v2.0.c.
+The minimal examples all use the modern, recommended way.
 
 If you just need generic serving capability, without the need to integrate lws
 to some other app, consider not writing any server code at all, and instead use
@@ -94,7 +94,7 @@ if it met network conditions where it had to buffer your send data internally.
 
 So your code for `LWS_CALLBACK_CLIENT_WRITEABLE` needs to own the decision
 about what to send, it can't assume that just because the writeable callback
-came it really is time to send something.
+came something is ready to send.
 
 It's quite possible you get an 'extra' writeable callback at any time and
 just need to `return 0` and wait for the expected callback later.
@@ -142,7 +142,7 @@ all the server resources.
 @section evtloop Libwebsockets is singlethreaded
 
 Libwebsockets works in a serialized event loop, in a single thread.  It supports
-not only the default poll() backend, but libuv, libev, and libevent event loop
+the default poll() backend, and libuv, libev, and libevent event loop
 libraries that also take this locking-free, nonblocking event loop approach that
 is not threadsafe.  There are several advantages to this technique, but one
 disadvantage, it doesn't integrate easily if there are multiple threads that
@@ -305,8 +305,7 @@ Clients with limited storage and RAM will find this useful; the memory needed
 for the inflate case is constrained so that only one input buffer at a time
 is ever in memory.
 
-To use this feature, ensure LWS_WITH_ZIP_FOPS is enabled at CMake (it is by
-default).
+To use this feature, ensure LWS_WITH_ZIP_FOPS is enabled at CMake.
 
 `libwebsockets-test-server-v2.0` includes a mount using this technology
 already, run that test server and navigate to http://localhost:7681/ziptest/candide.html
@@ -379,7 +378,19 @@ If you are not building with _DEBUG defined, ie, without this
 
 then log levels below notice do not actually get compiled in.
 
+@section asan Building with ASAN
 
+Under GCC you can select for the build to be instrumented with the Address
+Sanitizer, using `cmake .. -DCMAKE_BUILD_TYPE=DEBUG -DLWS_WITH_ASAN=1`.  LWS is routinely run during development with valgrind, but ASAN is capable of finding different issues at runtime, like operations which are not strictly defined in the C
+standard and depend on platform behaviours.
+
+Run your application like this
+
+```
+	$ sudo ASAN_OPTIONS=verbosity=2:halt_on_error=1  /usr/local/bin/lwsws
+```
+
+and attach gdb to catch the place it halts.
 
 @section extpoll External Polling Loop support
 
@@ -743,7 +754,9 @@ callbacks on the named protocol
 
 starting with LWS_CALLBACK_RAW_ADOPT_FILE.
 
-`protocol-lws-raw-test` plugin provides a method for testing this with
+The minimal example `raw/minimal-raw-file` demonstrates how to use it.
+
+`protocol-lws-raw-test` plugin also provides a method for testing this with
 `libwebsockets-test-server-v2.0`:
 
 The plugin creates a FIFO on your system called "/tmp/lws-test-raw"
@@ -764,7 +777,8 @@ HTTP[s] and WS[s].  If the first bytes written on the connection are not a
 valid HTTP method, then the connection switches to RAW mode.
 
 This is disabled by default, you enable it by setting the `.options` flag
-LWS_SERVER_OPTION_FALLBACK_TO_RAW when creating the vhost.
+LWS_SERVER_OPTION_FALLBACK_TO_APPLY_LISTEN_ACCEPT_CONFIG, and setting
+`.listen_accept_role` to `"raw-skt"` when creating the vhost.
 
 RAW mode socket connections receive the following callbacks
 
@@ -776,16 +790,8 @@ RAW mode socket connections receive the following callbacks
 ```
 
 You can control which protocol on your vhost handles these RAW mode
-incoming connections by marking the selected protocol with a pvo `raw`, eg
-
-```
-        "protocol-lws-raw-test": {
-                 "status": "ok",
-                 "raw": "1"
-        },
-```
-
-The "raw" pvo marks this protocol as being used for RAW connections.
+incoming connections by setting the vhost info struct's `.listen_accept_protocol`
+to the vhost protocol name to use.
 
 `protocol-lws-raw-test` plugin provides a method for testing this with
 `libwebsockets-test-server-v2.0`:
@@ -826,6 +832,46 @@ and in another window, connect to it using the test client
 
 The connection should succeed, and text typed in the netcat window (including a CRLF)
 will be received in the client.
+
+@section rawudp RAW UDP socket integration
+
+Lws provides an api to create, optionally bind, and adopt a RAW UDP
+socket (RAW here means an uninterpreted normal UDP socket, not a
+"raw socket").
+
+```
+LWS_VISIBLE LWS_EXTERN struct lws *
+lws_create_adopt_udp(struct lws_vhost *vhost, int port, int flags,
+		     const char *protocol_name, struct lws *parent_wsi);
+```
+
+`flags` should be `LWS_CAUDP_BIND` if the socket will receive packets.
+
+The callbacks `LWS_CALLBACK_RAW_ADOPT`, `LWS_CALLBACK_RAW_CLOSE`,
+`LWS_CALLBACK_RAW_RX` and `LWS_CALLBACK_RAW_WRITEABLE` apply to the
+wsi.  But UDP is different than TCP in some fundamental ways.
+
+For receiving on a UDP connection, data becomes available at
+`LWS_CALLBACK_RAW_RX` as usual, but because there is no specific
+connection with UDP, it is necessary to also get the source address of
+the data separately, using `struct lws_udp * lws_get_udp(wsi)`.
+You should take a copy of the `struct lws_udp` itself (not the
+pointer) and save it for when you want to write back to that peer.
+
+Writing is also a bit different for UDP.  By default, the system has no
+idea about the receiver state and so asking for a `callback_on_writable()`
+always believes that the socket is writeable... the callback will
+happen next time around the event loop.
+
+With UDP, there is no single "connection".  You need to write with sendto() and
+direct the packets to a specific destination.  To return packets to a
+peer who sent something earlier and you copied his `struct lws_udp`, you
+use the .sa and .salen members as the last two parameters of the sendto().
+
+The kernel may not accept to buffer / write everything you wanted to send.
+So you are responsible to watch the result of sendto() and resend the
+unsent part next time (which may involve adding new protocol headers to
+the remainder depending on what you are doing).
 
 @section ecdh ECDH Support
 
@@ -955,13 +1001,25 @@ context init options flags
 
 to indicate it will use one of the event libraries at runtime.
 
-libev has some problems, its headers conflict with libevent, they both define
-critical constants like EV_READ to different values.  Attempts
-to discuss clearing that up with libevent and libev did not get anywhere useful.
+libev and libevent headers conflict, they both define critical constants like
+EV_READ to different values.  Attempts to discuss clearing that up with both
+libevent and libev did not get anywhere useful.  Therefore CMakeLists.txt will
+error out if you enable both LWS_WITH_LIBEV and LWS_WITH_LIBEVENT.
 
-In addition building anything with libev using gcc spews warnings, the
-maintainer is aware of this for many years, and blames gcc.  We worked
-around this by disabling -Werror on the parts of lws that use libev.
+In addition depending on libev / compiler version, building anything with libev
+apis using gcc may blow strict alias warnings (which are elevated to errors in
+lws).  I did some googling at found these threads related to it, the issue goes
+back at least to 2010 on and off
+
+https://github.com/redis/hiredis/issues/434
+https://bugs.gentoo.org/show_bug.cgi?id=615532
+http://lists.schmorp.de/pipermail/libev/2010q1/000916.html
+http://lists.schmorp.de/pipermail/libev/2010q1/000920.html
+http://lists.schmorp.de/pipermail/libev/2010q1/000923.html
+
+We worked around this problem by disabling -Werror on the parts of lws that
+use libev.  FWIW as of Dec 2019 using Fedora 31 libev 4.27.1 and its gcc 9.2.1
+doesn't seem to trigger the problem even without the workaround.
 
 For these reasons and the response I got trying to raise these issues with
 them, if you have a choice about event loop, I would gently encourage you
@@ -1038,7 +1096,41 @@ prepare the client SSL context for the vhost after creating the vhost, since
 this is not normally done if the vhost was set up to listen / serve.  Call
 the api lws_init_vhost_client_ssl() to also allow client SSL on the vhost.
 
+@section clipipe Pipelining Client Requests to same host
 
+If you are opening more client requests to the same host and port, you
+can give the flag LCCSCF_PIPELINE on `info.ssl_connection` to indicate
+you wish to pipeline them.
+
+Without the flag, the client connections will occur concurrently using a
+socket and tls wrapper if requested for each connection individually.
+That is fast, but resource-intensive.
+
+With the flag, lws will queue subsequent client connections on the first
+connection to the same host and port.  When it has confirmed from the
+first connection that pipelining / keep-alive is supported by the server,
+it lets the queued client pipeline connections send their headers ahead
+of time to create a pipeline of requests on the server side.
+
+In this way only one tcp connection and tls wrapper is required to transfer
+all the transactions sequentially.  It takes a little longer but it
+can make a significant difference to resources on both sides.
+
+If lws learns from the first response header that keepalive is not possible,
+then it marks itself with that information and detaches any queued clients
+to make their own individual connections as a fallback.
+
+Lws can also intelligently combine multiple ongoing client connections to
+the same host and port into a single http/2 connection with multiple
+streams if the server supports it.
+
+Unlike http/1 pipelining, with http/2 the client connections all occur
+simultaneously using h2 stream multiplexing inside the one tcp + tls
+connection.
+
+You can turn off the h2 client support either by not building lws with
+`-DLWS_WITH_HTTP2=1` or giving the `LCCSCF_NOT_H2` flag in the client
+connection info struct `ssl_connection` member.
 
 @section vhosts Using lws vhosts
 
@@ -1262,3 +1354,20 @@ also add this to your own html easily
  - in your ws onClose(), reapply the dimming
  
    lws_gray_out(true,{'zindex':'499'});
+
+@section errstyle Styling http error pages
+
+In the code, http errors should be handled by `lws_return_http_status()`.
+
+There are basically two ways... the vhost can be told to redirect to an "error
+page" URL in response to specifically a 404... this is controlled by the
+context / vhost info struct (`struct lws_context_creation_info`) member
+`.error_document_404`... if non-null the client is redirected to this string.
+
+If it wasn't redirected, then the response code html is synthesized containing
+the user-selected text message and attempts to pull in `/error.css` for styling.
+
+If this file exists, it can be used to style the error page.  See 
+https://libwebsockets.org/git/badrepo for an example of what can be done (
+and https://libwebsockets.org/error.css for the corresponding css).
+

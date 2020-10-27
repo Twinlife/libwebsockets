@@ -68,8 +68,8 @@ static void barrett_reduce(sc25519 *r, const uint32_t x[64])
       if(i+j >= 31) q2[i+j] += mu[i]*x[j+31];
   carry = q2[31] >> 8;
   q2[32] += carry;
-  carry = q2[32] >> 8;
-  q2[33] += carry;
+  //carry = q2[32] >> 8;
+  //q2[33] += carry;
 
   for(i=0;i<33;i++)r1[i] = x[i];
   for(i=0;i<32;i++)
@@ -180,11 +180,10 @@ void sc25519_add(sc25519 *r, const sc25519 *x, const sc25519 *y)
 void sc25519_sub_nored(sc25519 *r, const sc25519 *x, const sc25519 *y)
 {
   uint32_t b = 0;
-  uint32_t t;
   int i;
   for(i=0;i<32;i++)
   {
-    t = x->v[i] - y->v[i] - b;
+    uint32_t t = x->v[i] - y->v[i] - b;
     r->v[i] = t & 255;
     b = (t >> 8) & 1;
   }

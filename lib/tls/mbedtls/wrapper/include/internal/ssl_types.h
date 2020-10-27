@@ -19,10 +19,14 @@
  extern "C" {
 #endif
 
+//#include "private-lib-core.h"
 #include <lws_config.h>
-#if defined(LWS_WITH_ESP32)
-#undef MBEDTLS_CONFIG_FILE
-#define MBEDTLS_CONFIG_FILE <mbedtls/esp_config.h>
+#if defined(LWS_PLAT_FREERTOS)
+ /* AMAZON RTOS has its own setting via MTK_MBEDTLS_CONFIG_FILE */
+ #if !defined(LWS_AMAZON_RTOS)
+  #undef MBEDTLS_CONFIG_FILE
+  #define MBEDTLS_CONFIG_FILE <mbedtls/esp_config.h>
+ #endif
 #endif
 
 #include "ssl_code.h"
@@ -37,7 +41,11 @@ typedef void RSA;
 typedef void STACK;
 typedef void BIO;
 
+#if defined(WIN32) || defined(_WIN32)
+#define ossl_inline __inline
+#else
 #define ossl_inline inline
+#endif
 
 #define SSL_METHOD_CALL(f, s, ...)        s->method->func->ssl_##f(s, ##__VA_ARGS__)
 #define X509_METHOD_CALL(f, x, ...)       x->method->x509_##f(x, ##__VA_ARGS__)
@@ -150,9 +158,10 @@ struct X509_VERIFY_PARAM_st {
 
 };
 
-typedef int (*next_proto_cb)(SSL *ssl, unsigned char **out,
+typedef int (*next_proto_cb)(SSL *ssl, const unsigned char **out,
                              unsigned char *outlen, const unsigned char *in,
                              unsigned int inlen, void *arg);
+
 
 struct ssl_ctx_st
 {
@@ -202,6 +211,8 @@ struct ssl_st
     SSL_CTX  *ctx;
 
     const SSL_METHOD *method;
+
+    const char **alpn_protos;
 
     RECORD_LAYER rlayer;
 
@@ -289,6 +300,9 @@ struct pkey_method_st {
 };
 
 #define OPENSSL_NPN_NEGOTIATED 1
+
+int X509_STORE_CTX_get_error(X509_STORE_CTX *ctx);
+int X509_STORE_CTX_get_error_depth(X509_STORE_CTX *ctx);
 
 #ifdef __cplusplus
 }
