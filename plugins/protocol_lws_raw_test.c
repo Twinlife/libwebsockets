@@ -1,7 +1,7 @@
 /*
  * ws protocol handler plugin for testing raw file and raw socket
  *
- * Copyright (C) 2010-2017 Andy Green <andy@warmcat.com>
+ * Written in 2010-2019 by Andy Green <andy@warmcat.com>
  *
  * This file is made available under the Creative Commons CC0 1.0
  * Universal Public Domain Dedication.
@@ -42,7 +42,8 @@
  * RAW Socket Descriptor Testing
  * =============================
  *
- * 1) You must give the vhost the option flag LWS_SERVER_OPTION_FALLBACK_TO_RAW
+ * 1) You must give the vhost the option flag
+ * 	LWS_SERVER_OPTION_FALLBACK_TO_APPLY_LISTEN_ACCEPT_CONFIG
  *
  * 2) Enable on a vhost like this
  *
@@ -67,10 +68,13 @@
 #if !defined (LWS_PLUGIN_STATIC)
 #define LWS_DLL
 #define LWS_INTERNAL
-#include "../lib/libwebsockets.h"
+#include <libwebsockets.h>
 #endif
 
 #include <string.h>
+#include <fcntl.h>
+
+#include <sys/stat.h>
 
 struct per_vhost_data__raw_test {
 	struct lws_context *context;
@@ -88,8 +92,8 @@ struct per_session_data__raw_test {
 };
 
 static int
-callback_raw_test(struct lws *wsi, enum lws_callback_reasons reason,
-			void *user, void *in, size_t len)
+callback_raw_test(struct lws *wsi, enum lws_callback_reasons reason, void *user,
+		  void *in, size_t len)
 {
 	struct per_session_data__raw_test *pss =
 			(struct per_session_data__raw_test *)user;
@@ -111,14 +115,17 @@ callback_raw_test(struct lws *wsi, enum lws_callback_reasons reason,
 		vhd->vhost = lws_get_vhost(wsi);
 		{
 			const struct lws_protocol_vhost_options *pvo =
-					(const struct lws_protocol_vhost_options *)in;
+				(const struct lws_protocol_vhost_options *)in;
 			while (pvo) {
 				if (!strcmp(pvo->name, "fifo-path"))
-					lws_strncpy(vhd->fifo_path, pvo->value, sizeof(vhd->fifo_path) - 1);
+					lws_strncpy(vhd->fifo_path, pvo->value,
+							sizeof(vhd->fifo_path));
 				pvo = pvo->next;
 			}
 			if (vhd->fifo_path[0] == '\0') {
-				lwsl_err("%s: Missing pvo \"fifo-path\", raw file fd testing disabled\n", __func__);
+				lwsl_err("%s: Missing pvo \"fifo-path\", "
+					 "raw file fd testing disabled\n",
+					 __func__);
 				break;
 			}
 		}
@@ -127,7 +134,7 @@ callback_raw_test(struct lws *wsi, enum lws_callback_reasons reason,
 			lwsl_err("mkfifo failed\n");
 			return 1;
 		}
-		vhd->fifo = open(vhd->fifo_path, O_NONBLOCK | O_RDONLY);
+		vhd->fifo = lws_open(vhd->fifo_path, O_NONBLOCK | O_RDONLY);
 		if (vhd->fifo == -1) {
 			lwsl_err("opening fifo failed\n");
 			unlink(vhd->fifo_path);
@@ -135,7 +142,8 @@ callback_raw_test(struct lws *wsi, enum lws_callback_reasons reason,
 		}
 		lwsl_notice("FIFO %s created\n", vhd->fifo_path);
 		u.filefd = vhd->fifo;
-		if (!lws_adopt_descriptor_vhost(vhd->vhost, 0, u,
+		if (!lws_adopt_descriptor_vhost(vhd->vhost,
+						LWS_ADOPT_RAW_FILE_DESC, u,
 						"protocol-lws-raw-test",
 						NULL)) {
 			lwsl_err("Failed to adopt fifo descriptor\n");
@@ -148,7 +156,7 @@ callback_raw_test(struct lws *wsi, enum lws_callback_reasons reason,
 	case LWS_CALLBACK_PROTOCOL_DESTROY:
 		if (!vhd)
 			break;
-		if (vhd->fifo >- 0) {
+		if (vhd->fifo >= 0) {
 			close(vhd->fifo);
 			unlink(vhd->fifo_path);
 		}
@@ -176,16 +184,18 @@ callback_raw_test(struct lws *wsi, enum lws_callback_reasons reason,
 				return 1;
 			}
 			/*
-			 * When nobody opened the other side of the FIFO, the FIFO fd acts well and
-			 * only signals POLLIN when somebody opened and wrote to it.
+			 * When nobody opened the other side of the FIFO, the
+			 * FIFO fd acts well and only signals POLLIN when
+			 * somebody opened and wrote to it.
 			 *
-			 * But if the other side of the FIFO closed it, we will see an endless
-			 * POLLIN and 0 available to read.
+			 * But if the other side of the FIFO closed it, we will
+			 * see an endless POLLIN and 0 available to read.
 			 *
-			 * The only way to handle it is to reopen the FIFO our side and wait for a
-			 * new peer.  This is a quirk of FIFOs not of LWS.
+			 * The only way to handle it is to reopen the FIFO our
+			 * side and wait for a new peer.  This is a quirk of
+			 * FIFOs not of LWS.
 			 */
-			if (n == 0) { /* peer closed - do reopen in close processing */
+			if (n == 0) { /* peer closed - reopen in close processing */
 				vhd->zero_length_read = 1;
 				return 1;
 			}
@@ -200,15 +210,19 @@ callback_raw_test(struct lws *wsi, enum lws_callback_reasons reason,
 		if (vhd->zero_length_read) {
 			vhd->zero_length_read = 0;
 			close(vhd->fifo);
-			/* the wsi that adopted the fifo file is closing... reopen the fifo and readopt */
-			vhd->fifo = open(vhd->fifo_path, O_NONBLOCK | O_RDONLY);
+			/* the wsi that adopted the fifo file is closing...
+			 * reopen the fifo and readopt
+			 */
+			vhd->fifo = lws_open(vhd->fifo_path,
+					     O_NONBLOCK | O_RDONLY);
 			if (vhd->fifo == -1) {
 				lwsl_err("opening fifo failed\n");
 				return 1;
 			}
 			lwsl_notice("FIFO %s reopened\n", vhd->fifo_path);
 			u.filefd = vhd->fifo;
-			if (!lws_adopt_descriptor_vhost(vhd->vhost, 0, u, "protocol-lws-raw-test", NULL)) {
+			if (!lws_adopt_descriptor_vhost(vhd->vhost, 0, u,
+					"protocol-lws-raw-test", NULL)) {
 				lwsl_err("Failed to adopt fifo descriptor\n");
 				close(vhd->fifo);
 				return 1;
@@ -267,28 +281,17 @@ static const struct lws_protocols protocols[] = {
 	LWS_PLUGIN_PROTOCOL_RAW_TEST
 };
 
-LWS_EXTERN LWS_VISIBLE int
-init_protocol_lws_raw_test(struct lws_context *context,
-			     struct lws_plugin_capability *c)
-{
-	if (c->api_magic != LWS_PLUGIN_API_MAGIC) {
-		lwsl_err("Plugin API %d, library API %d", LWS_PLUGIN_API_MAGIC,
-			 c->api_magic);
-		return 1;
-	}
+LWS_VISIBLE const lws_plugin_protocol_t lws_raw_test = {
+	.hdr = {
+		"lws raw test",
+		"lws_protocol_plugin",
+		LWS_PLUGIN_API_MAGIC
+	},
 
-	c->protocols = protocols;
-	c->count_protocols = ARRAY_SIZE(protocols);
-	c->extensions = NULL;
-	c->count_extensions = 0;
-
-	return 0;
-}
-
-LWS_EXTERN LWS_VISIBLE int
-destroy_protocol_lws_raw_test(struct lws_context *context)
-{
-	return 0;
-}
+	.protocols = protocols,
+	.count_protocols = LWS_ARRAY_SIZE(protocols),
+	.extensions = NULL,
+	.count_extensions = 0,
+};
 
 #endif

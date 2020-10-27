@@ -1,7 +1,7 @@
 /*
  * ws protocol handler plugin for sshd demo
  *
- * Copyright (C) 2010-2017 Andy Green <andy@warmcat.com>
+ * Written in 2010-2019 by Andy Green <andy@warmcat.com>
  *
  * This file is made available under the Creative Commons CC0 1.0
  * Universal Public Domain Dedication.
@@ -21,13 +21,15 @@
 #if !defined (LWS_PLUGIN_STATIC)
 #define LWS_DLL
 #define LWS_INTERNAL
-#include "../lib/libwebsockets.h"
+#include <libwebsockets.h>
 #endif
 
 #include <lws-ssh.h>
 
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <fcntl.h>
 
 #define TEST_SERVER_KEY_PATH "/etc/lws-test-sshd-server-key"
 
@@ -207,7 +209,8 @@ ssh_ops_get_server_key(struct lws *wsi, uint8_t *buf, size_t len)
 						 lws_get_protocol(wsi));
 	int n;
 
-	lseek(vhd->privileged_fd, 0, SEEK_SET);
+	if (lseek(vhd->privileged_fd, 0, SEEK_SET) < 0)
+		return 0;
 	n = read(vhd->privileged_fd, buf, (int)len);
 	if (n < 0) {
 		lwsl_err("%s: read failed: %d\n", __func__, n);
@@ -241,7 +244,7 @@ static int
 ssh_ops_is_pubkey_authorized(const char *username, const char *type,
 				 const uint8_t *peer, int peer_len)
 {
-	char *aps = NULL, *p, *ps;
+	char *aps, *p, *ps;
 	int n = (int)strlen(type), alen = 2048, ret = 2, len;
 	size_t s = 0;
 
@@ -299,7 +302,7 @@ ssh_ops_is_pubkey_authorized(const char *username, const char *type,
 	 * <len32>E<len32>N that the peer sends us
 	 */
 	if (memcmp(peer, ps, peer_len)) {
-		lwsl_info("factors mismatch\n");
+		lwsl_info("%s: factors mismatch, rejecting key\n", __func__);
 		goto bail;
 	}
 
@@ -396,9 +399,9 @@ callback_lws_sshd_demo(struct lws *wsi, enum lws_callback_reasons reason,
 		 * deal with it down /etc/.. when just after this we will lose
 		 * the privileges needed to read / write /etc/...
 		 */
-		vhd->privileged_fd = open(TEST_SERVER_KEY_PATH, O_RDONLY);
+		vhd->privileged_fd = lws_open(TEST_SERVER_KEY_PATH, O_RDONLY);
 		if (vhd->privileged_fd == -1)
-			vhd->privileged_fd = open(TEST_SERVER_KEY_PATH,
+			vhd->privileged_fd = lws_open(TEST_SERVER_KEY_PATH,
 					O_CREAT | O_TRUNC | O_RDWR, 0600);
 		if (vhd->privileged_fd == -1) {
 			lwsl_err("%s: Can't open %s\n", __func__,
@@ -412,6 +415,9 @@ callback_lws_sshd_demo(struct lws *wsi, enum lws_callback_reasons reason,
 		break;
 
 	case LWS_CALLBACK_VHOST_CERT_AGING:
+		break;
+
+	case LWS_CALLBACK_EVENT_WAIT_CANCELLED:
 		break;
 
 	default:
@@ -450,28 +456,17 @@ static const struct lws_protocols protocols[] = {
 		LWS_PLUGIN_PROTOCOL_LWS_SSHD_DEMO
 };
 
-LWS_EXTERN LWS_VISIBLE int
-init_protocol_lws_sshd_demo(struct lws_context *context,
-			     struct lws_plugin_capability *c)
-{
-	if (c->api_magic != LWS_PLUGIN_API_MAGIC) {
-		lwsl_err("Plugin API %d, library API %d", LWS_PLUGIN_API_MAGIC,
-			 c->api_magic);
-		return 1;
-	}
+LWS_VISIBLE const lws_plugin_protocol_t lws_sshd_demo = {
+	.hdr = {
+		"lws sshd demo",
+		"lws_protocol_plugin",
+		LWS_PLUGIN_API_MAGIC
+	},
 
-	c->protocols = protocols;
-	c->count_protocols = ARRAY_SIZE(protocols);
-	c->extensions = NULL;
-	c->count_extensions = 0;
-
-	return 0;
-}
-
-LWS_EXTERN LWS_VISIBLE int
-destroy_protocol_lws_sshd_demo(struct lws_context *context)
-{
-	return 0;
-}
+	.protocols = protocols,
+	.count_protocols = LWS_ARRAY_SIZE(protocols),
+	.extensions = NULL,
+	.count_extensions = 0,
+};
 
 #endif

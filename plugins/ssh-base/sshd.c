@@ -1,22 +1,25 @@
 /*
- * libwebsockets - lws-plugin-ssh-base - sshd.c
+ * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2017 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2019 Andy Green <andy@warmcat.com>
  *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation:
- *  version 2.1 of the License.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- *  MA  02110-1301  USA
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
  */
 
 #include "libwebsockets.h"
@@ -84,28 +87,6 @@ lws_buf(uint8_t **p, void *s, uint32_t len)
 	*p += len;
 
 	return 0;
-}
-
-
-void
-explicit_bzero(void *p, size_t len)
-{
-	volatile uint8_t *vp = p;
-
-	while (len--)
-		*vp++ = 0;
-}
-
-int
-lws_timingsafe_bcmp(const void *a, const void *b, uint32_t len)
-{
-	const uint8_t *pa = a, *pb = b;
-	uint8_t sum = 0;
-
-	while (len--)
-		sum |= (*pa ^ *pb);
-
-	return sum;
 }
 
 void
@@ -402,7 +383,7 @@ lws_kex_destroy(struct per_session_data__sshd *pss)
 		pss->kex->I_S = NULL;
 	}
 
-	explicit_bzero(pss->kex, sizeof(*pss->kex));
+	lws_explicit_bzero(pss->kex, sizeof(*pss->kex));
 	free(pss->kex);
 	pss->kex = NULL;
 }
@@ -416,6 +397,8 @@ ssh_free(void *p)
 	lwsl_debug("%s: FREE %p\n", __func__, p);
 	free(p);
 }
+
+#define ssh_free_set_NULL(x) if (x) { ssh_free(x); (x) = NULL; }
 
 static void
 lws_ua_destroy(struct per_session_data__sshd *pss)
@@ -434,11 +417,11 @@ lws_ua_destroy(struct per_session_data__sshd *pss)
 	if (pss->ua->pubkey)
 		ssh_free(pss->ua->pubkey);
 	if (pss->ua->sig) {
-		explicit_bzero(pss->ua->sig, pss->ua->sig_len);
+		lws_explicit_bzero(pss->ua->sig, pss->ua->sig_len);
 		ssh_free(pss->ua->sig);
 	}
 
-	explicit_bzero(pss->ua, sizeof(*pss->ua));
+	lws_explicit_bzero(pss->ua, sizeof(*pss->ua));
 	free(pss->ua);
 	pss->ua = NULL;
 }
@@ -546,7 +529,7 @@ lws_ssh_exec_finish(void *finish_handle, int retcode)
 static int
 lws_ssh_parse_plaintext(struct per_session_data__sshd *pss, uint8_t *p, size_t len)
 {
-	struct lws_genrsa_elements el;
+	struct lws_gencrypto_keyelem e[LWS_GENCRYPTO_RSA_KEYEL_COUNT];
 	struct lws_genrsa_ctx ctx;
 	struct lws_ssh_channel *ch;
 	struct lws_subprotocol_scp *scp;
@@ -1035,12 +1018,14 @@ again:
 
 		case SSHS_DO_UAR_SVC:
 			pss->ua->username = (char *)pss->last_alloc;
+			pss->last_alloc = NULL; /* it was adopted */
 			state_get_string_alloc(pss, SSHS_DO_UAR_PUBLICKEY);
 			/* destroyed with UA struct */
 			break;
 
 		case SSHS_DO_UAR_PUBLICKEY:
 			pss->ua->service = (char *)pss->last_alloc;
+			pss->last_alloc = NULL; /* it was adopted */
 
 			/* Sect 5, RFC4252
 			 *
@@ -1066,10 +1051,12 @@ again:
 			}
 
 			pss->seen_auth_req_before = 1;
-			lws_strncpy(pss->last_auth_req_username, pss->ua->username,
-				sizeof(pss->last_auth_req_username) - 1);
-			lws_strncpy(pss->last_auth_req_service, pss->ua->service,
-				sizeof(pss->last_auth_req_service) - 1);
+			lws_strncpy(pss->last_auth_req_username,
+				    pss->ua->username,
+				    sizeof(pss->last_auth_req_username));
+			lws_strncpy(pss->last_auth_req_service,
+				    pss->ua->service,
+				    sizeof(pss->last_auth_req_service));
 
 			if (strcmp(pss->ua->service, "ssh-connection"))
 				goto ua_fail;
@@ -1100,6 +1087,7 @@ again:
 
 		case SSHS_NVC_DO_UAR_ALG:
 			pss->ua->alg = (char *)pss->last_alloc;
+			pss->last_alloc = NULL; /* it was adopted */
 			if (rsa_hash_alg_from_ident(pss->ua->alg) < 0) {
 				lwsl_notice("unknown alg\n");
 				goto ua_fail;
@@ -1110,6 +1098,7 @@ again:
 
 		case SSHS_NVC_DO_UAR_PUBKEY_BLOB:
 			pss->ua->pubkey = pss->last_alloc;
+			pss->last_alloc = NULL; /* it was adopted */
 			pss->ua->pubkey_len = pss->npos;
 			/*
 			 * RFC4253
@@ -1167,6 +1156,7 @@ again:
 			}
 			lwsl_info("SSHS_DO_UAR_SIG\n");
 			pss->ua->sig = pss->last_alloc;
+			pss->last_alloc = NULL; /* it was adopted */
 			pss->ua->sig_len = pss->npos;
 			pss->parser_state = SSHS_MSG_EAT_PADDING;
 
@@ -1241,19 +1231,21 @@ again:
 			 * the E and N factors
 			 */
 
-			memset(&el, 0, sizeof(el));
+			memset(e, 0, sizeof(e));
 			pp = pss->ua->pubkey;
 			m = lws_g32(&pp);
 			pp += m;
 			m = lws_g32(&pp);
-			el.e[JWK_KEY_E].buf = pp;
-			el.e[JWK_KEY_E].len = m;
+			e[LWS_GENCRYPTO_RSA_KEYEL_E].buf = pp;
+			e[LWS_GENCRYPTO_RSA_KEYEL_E].len = m;
 			pp += m;
 			m = lws_g32(&pp);
-			el.e[JWK_KEY_N].buf = pp;
-			el.e[JWK_KEY_N].len = m;
+			e[LWS_GENCRYPTO_RSA_KEYEL_N].buf = pp;
+			e[LWS_GENCRYPTO_RSA_KEYEL_N].len = m;
 
-			if (lws_genrsa_create(&ctx, &el))
+			if (lws_genrsa_create(&ctx, e, pss->vhd->context,
+					      LGRSAM_PKCS1_1_5,
+					      LWS_GENHASH_TYPE_UNKNOWN))
 				goto ua_fail;
 
 			/*
@@ -1348,6 +1340,7 @@ again:
 
 		case SSHS_NVC_DISCONNECT_DESC:
 			pss->disconnect_desc = (char *)pss->last_alloc;
+			pss->last_alloc = NULL; /* it was adopted */
 			state_get_string(pss, SSHS_NVC_DISCONNECT_LANG);
 			break;
 
@@ -1357,7 +1350,7 @@ again:
 				pss->vhd->ops->disconnect_reason(
 					pss->disconnect_reason,
 					pss->disconnect_desc, pss->name);
-			ssh_free(pss->last_alloc);
+			ssh_free_set_NULL(pss->last_alloc);
 			break;
 
 			/*
@@ -1514,12 +1507,13 @@ again:
 		case SSHS_NVC_CHRQ_MODES:
 			/* modes is a stream of byte-pairs, not a string */
 			pss->args.pty.modes = (char *)pss->last_alloc;
+			pss->last_alloc = NULL; /* it was adopted */
 			pss->args.pty.modes_len = pss->npos;
 			n = 0;
 			if (pss->vhd->ops && pss->vhd->ops->pty_req)
 				n = pss->vhd->ops->pty_req(pss->ch_temp->priv,
 							&pss->args.pty);
-			ssh_free(pss->last_alloc);
+			ssh_free_set_NULL(pss->args.pty.modes);
 			if (n)
 				goto chrq_fail;
 			if (pss->rq_want_reply)
@@ -1567,7 +1561,7 @@ again:
 			    !pss->vhd->ops->exec(pss->ch_temp->priv, pss->wsi,
 					    	 (const char *)pss->last_alloc,
 						 lws_ssh_exec_finish, pss->ch_temp)) {
-				ssh_free(pss->last_alloc);
+				ssh_free_set_NULL(pss->last_alloc);
 				if (pss->rq_want_reply)
 					write_task_insert(pss, pss->ch_temp,
 						   SSH_WT_CHRQ_SUCC);
@@ -1590,7 +1584,7 @@ again:
 				/* disallow it */
 				n = 0;
 
-			ssh_free(pss->last_alloc);
+			ssh_free_set_NULL(pss->last_alloc);
 			if (!n)
 				goto chrq_fail;
 
@@ -1624,7 +1618,7 @@ again:
 				n = 1;
 			}
 #endif
-			ssh_free(pss->last_alloc);
+			ssh_free_set_NULL(pss->last_alloc);
 //			if (!n)
 				goto ch_fail;
 #if 0
@@ -1715,12 +1709,12 @@ again:
 				break;
 			}
 			if (pss->parser_state == SSHS_NVC_CD_DATA_ALLOC)
-				ssh_free(pss->last_alloc);
+				ssh_free_set_NULL(pss->last_alloc);
 
 			if (ch->peer_window_est < 32768) {
 				write_task(pss, ch, SSH_WT_WINDOW_ADJUST);
 				ch->peer_window_est += 32768;
-				lwsl_notice("extra peer WINDOW_ADJUST (~ %d)\n",
+				lwsl_info("extra peer WINDOW_ADJUST (~ %d)\n",
 					    ch->peer_window_est);
 			}
 
@@ -2082,6 +2076,8 @@ lws_callback_raw_sshd(struct lws *wsi, enum lws_callback_reasons reason,
 		lws_kex_destroy(pss);
 		lws_ua_destroy(pss);
 
+		ssh_free_set_NULL(pss->last_alloc);
+
 		while (pss->ch_list)
 			ssh_destroy_channel(pss, pss->ch_list);
 
@@ -2232,6 +2228,7 @@ lws_callback_raw_sshd(struct lws *wsi, enum lws_callback_reasons reason,
 			ps1 = sshd_zalloc(n);
 			if (!ps1)
 				goto bail;
+			ps = ps1;
 			pp = ps1 + 5;
 			*pp++ = SSH_MSG_USERAUTH_PK_OK;
 			if (lws_cstr(&pp, pss->ua->alg, 64)) {
@@ -2561,34 +2558,24 @@ bail:
 		1024, 0, NULL, 900	\
 	}
 
-LWS_VISIBLE const struct lws_protocols protocols_sshd[] = {
+const struct lws_protocols protocols_sshd[] = {
 	LWS_PLUGIN_PROTOCOL_LWS_RAW_SSHD,
 	{ NULL, NULL, 0, 0, 0, NULL, 0 } /* terminator */
 };
 
 #if !defined (LWS_PLUGIN_STATIC)
 
-LWS_VISIBLE int
-init_protocol_lws_ssh_base(struct lws_context *context,
-			     struct lws_plugin_capability *c)
-{
-	if (c->api_magic != LWS_PLUGIN_API_MAGIC) {
-		lwsl_err("Plugin API %d, library API %d", LWS_PLUGIN_API_MAGIC,
-			 c->api_magic);
-		return 1;
-	}
+LWS_VISIBLE const lws_plugin_protocol_t lws_ssh_base = {
+	.hdr = {
+		"ssh base",
+		"lws_protocol_plugin",
+		LWS_PLUGIN_API_MAGIC
+	},
 
-	c->protocols = protocols_sshd;
-	c->count_protocols = ARRAY_SIZE(protocols_sshd);
-	c->extensions = NULL;
-	c->count_extensions = 0;
+	.protocols = protocols_sshd,
+	.count_protocols = LWS_ARRAY_SIZE(protocols_sshd),
+	.extensions = NULL,
+	.count_extensions = 0,
+};
 
-	return 0;
-}
-
-LWS_VISIBLE int
-destroy_protocol_lws_ssh_base(struct lws_context *context)
-{
-	return 0;
-}
 #endif

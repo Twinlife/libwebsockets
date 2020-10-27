@@ -1,27 +1,58 @@
 /*
- * Lightweight Embedded JSON Parser
+ * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2013-2017 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2020 Andy Green <andy@warmcat.com>
  *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation:
- *  version 2.1 of the License.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- *  MA  02110-1301  USA
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
  */
 
 #include <libwebsockets.h>
+#include "private-lib-core.h"
 #include <string.h>
 #include <stdio.h>
+
+static const char * const parser_errs[] = {
+	"",
+	"",
+	"No opening '{'",
+	"Expected closing '}'",
+	"Expected '\"'",
+	"String underrun",
+	"Illegal unescaped control char",
+	"Illegal escape format",
+	"Illegal hex number",
+	"Expected ':'",
+	"Illegal value start",
+	"Digit required after decimal point",
+	"Bad number format",
+	"Bad exponent format",
+	"Unknown token",
+	"Too many ']'",
+	"Mismatched ']'",
+	"Expected ']'",
+	"JSON nesting limit exceeded",
+	"Nesting tracking used up",
+	"Number too long",
+	"Comma or block end expected",
+	"Unknown",
+	"Parser callback errored (see earlier error)",
+};
 
 /**
  * lejp_construct - prepare a struct lejp_ctx for use
@@ -30,7 +61,7 @@
  * \param callback:	your user callback which will received parsed tokens
  * \param user:	optional user data pointer untouched by lejp
  * \param paths:	your array of name elements you are interested in
- * \param count_paths:	ARRAY_SIZE() of @paths
+ * \param count_paths:	LWS_ARRAY_SIZE() of @paths
  *
  * Prepares your context struct for use with lejp
  */
@@ -46,15 +77,21 @@ lejp_construct(struct lejp_ctx *ctx,
 	ctx->st[0].b = 0;
 	ctx->sp = 0;
 	ctx->ipos = 0;
-	ctx->ppos = 0;
+	ctx->outer_array = 0;
 	ctx->path_match = 0;
+	ctx->path_stride = 0;
 	ctx->path[0] = '\0';
-	ctx->callback = callback;
 	ctx->user = user;
-	ctx->paths = paths;
-	ctx->count_paths = count_paths;
 	ctx->line = 1;
-	ctx->callback(ctx, LEJPCB_CONSTRUCTED);
+
+	ctx->pst_sp = 0;
+	ctx->pst[0].callback = callback;
+	ctx->pst[0].paths = paths;
+	ctx->pst[0].count_paths = count_paths;
+	ctx->pst[0].user = NULL;
+	ctx->pst[0].ppos = 0;
+
+	ctx->pst[0].callback(ctx, LEJPCB_CONSTRUCTED);
 }
 
 /**
@@ -71,7 +108,7 @@ void
 lejp_destruct(struct lejp_ctx *ctx)
 {
 	/* no allocations... just let callback know what it happening */
-	ctx->callback(ctx, LEJPCB_DESTRUCTED);
+	ctx->pst[0].callback(ctx, LEJPCB_DESTRUCTED);
 }
 
 /**
@@ -100,23 +137,30 @@ void
 lejp_change_callback(struct lejp_ctx *ctx,
 		     signed char (*callback)(struct lejp_ctx *ctx, char reason))
 {
-	ctx->callback(ctx, LEJPCB_DESTRUCTED);
-	ctx->callback = callback;
-	ctx->callback(ctx, LEJPCB_CONSTRUCTED);
-	ctx->callback(ctx, LEJPCB_START);
+	ctx->pst[0].callback(ctx, LEJPCB_DESTRUCTED);
+	ctx->pst[0].callback = callback;
+	ctx->pst[0].callback(ctx, LEJPCB_CONSTRUCTED);
+	ctx->pst[0].callback(ctx, LEJPCB_START);
 }
 
-static void
+void
 lejp_check_path_match(struct lejp_ctx *ctx)
 {
 	const char *p, *q;
 	int n;
+	size_t s = sizeof(char *);
+
+	if (ctx->path_stride)
+		s = ctx->path_stride;
 
 	/* we only need to check if a match is not active */
-	for (n = 0; !ctx->path_match && n < ctx->count_paths; n++) {
+	for (n = 0; !ctx->path_match &&
+	     n < ctx->pst[ctx->pst_sp].count_paths; n++) {
 		ctx->wildcount = 0;
 		p = ctx->path;
-		q = ctx->paths[n];
+
+		q = *((char **)(((char *)ctx->pst[ctx->pst_sp].paths) + (n * s)));
+
 		while (*p && *q) {
 			if (*q != '*') {
 				if (*p != *q)
@@ -125,7 +169,7 @@ lejp_check_path_match(struct lejp_ctx *ctx)
 				q++;
 				continue;
 			}
-			ctx->wild[ctx->wildcount++] = p - ctx->path;
+			ctx->wild[ctx->wildcount++] = lws_ptr_diff(p, ctx->path);
 			q++;
 			/*
 			 * if * has something after it, match to .
@@ -142,7 +186,7 @@ lejp_check_path_match(struct lejp_ctx *ctx)
 			continue;
 
 		ctx->path_match = n + 1;
-		ctx->path_match_len = ctx->ppos;
+		ctx->path_match_len = ctx->pst[ctx->pst_sp].ppos;
 		return;
 	}
 
@@ -160,7 +204,7 @@ lejp_get_wildcard(struct lejp_ctx *ctx, int wildcard, char *dest, int len)
 
 	n = ctx->wild[wildcard];
 
-	while (--len && n < ctx->ppos &&
+	while (--len && n < ctx->pst[ctx->pst_sp].ppos &&
 	       (n == ctx->wild[wildcard] || ctx->path[n] != '.'))
 		*dest++ = ctx->path[n++];
 
@@ -186,16 +230,18 @@ lejp_get_wildcard(struct lejp_ctx *ctx, int wildcard, char *dest, int len)
  * unused.
  */
 
+static const char esc_char[] = "\"\\/bfnrt";
+static const char esc_tran[] = "\"\\/\b\f\n\r\t";
+static const char tokens[] = "rue alse ull ";
+
 int
 lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 {
-	unsigned char c, n, s, ret = LEJP_REJECT_UNKNOWN;
-	static const char esc_char[] = "\"\\/bfnrt";
-	static const char esc_tran[] = "\"\\/\b\f\n\r\t";
-	static const char tokens[] = "rue alse ull ";
+	unsigned char c, n, s;
+	int ret = LEJP_REJECT_UNKNOWN;
 
-	if (!ctx->sp && !ctx->ppos)
-		ctx->callback(ctx, LEJPCB_START);
+	if (!ctx->sp && !ctx->pst[ctx->pst_sp].ppos)
+		ctx->pst[ctx->pst_sp].callback(ctx, LEJPCB_START);
 
 	while (len--) {
 		c = *json++;
@@ -220,18 +266,37 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 
 		switch (s) {
 		case LEJP_IDLE:
+			if (!ctx->sp && c == '[') {
+				/* push */
+				ctx->outer_array = 1;
+				ctx->st[ctx->sp].s = LEJP_MP_ARRAY_END;
+				c = LEJP_MP_VALUE;
+				ctx->path[ctx->pst[ctx->pst_sp].ppos++] = '[';
+				ctx->path[ctx->pst[ctx->pst_sp].ppos++] = ']';
+				ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
+				if (ctx->pst[ctx->pst_sp].callback(ctx, LEJPCB_ARRAY_START))
+					goto reject_callback;
+				ctx->i[ctx->ipos++] = 0;
+				if (ctx->ipos > LWS_ARRAY_SIZE(ctx->i)) {
+					ret = LEJP_REJECT_MP_DELIM_ISTACK;
+					goto reject;
+				}
+				goto add_stack_level;
+			}
 			if (c != '{') {
 				ret = LEJP_REJECT_IDLE_NO_BRACE;
 				goto reject;
 			}
-			if (ctx->callback(ctx, LEJPCB_OBJECT_START)) {
-				ret = LEJP_REJECT_CALLBACK;
-				goto reject;
-			}
+			if (ctx->pst[ctx->pst_sp].callback(ctx,
+							   LEJPCB_OBJECT_START))
+				goto reject_callback;
 			ctx->st[ctx->sp].s = LEJP_MEMBERS;
 			break;
 		case LEJP_MEMBERS:
 			if (c == '}') {
+				if (ctx->sp >= 1)
+					goto pop_level;
+
 				ctx->st[ctx->sp].s = LEJP_IDLE;
 				ret = LEJP_REJECT_MEMBERS_NO_CLOSE;
 				goto reject;
@@ -250,17 +315,15 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 
 		case LEJP_MP_STRING:
 			if (c == '\"') {
-				if (!ctx->sp) {
+				if (!ctx->sp) { /* JSON can't end on quote */
 					ret = LEJP_REJECT_MP_STRING_UNDERRUN;
 					goto reject;
 				}
 				if (ctx->st[ctx->sp - 1].s != LEJP_MP_DELIM) {
 					ctx->buf[ctx->npos] = '\0';
-					if (ctx->callback(ctx,
-						      LEJPCB_VAL_STR_END) < 0) {
-						ret = LEJP_REJECT_CALLBACK;
-						goto reject;
-					}
+					if (ctx->pst[ctx->pst_sp].callback(ctx,
+						      LEJPCB_VAL_STR_END) < 0)
+						goto reject_callback;
 				}
 				/* pop */
 				ctx->sp--;
@@ -303,10 +366,10 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 				ctx->uni |= c - '0';
 			else
 				if (c >= 'a' && c <= 'f')
-					ctx->uni = c - 'a' + 10;
+					ctx->uni |= c - 'a' + 10;
 				else
 					if (c >= 'A' && c <= 'F')
-						ctx->uni = c - 'A' + 10;
+						ctx->uni |= c - 'A' + 10;
 					else {
 						ret = LEJP_REJECT_ILLEGAL_HEX;
 						goto reject;
@@ -363,17 +426,15 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 				goto reject;
 			}
 			ctx->st[ctx->sp].s = LEJP_MP_VALUE;
-			ctx->path[ctx->ppos] = '\0';
+			ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 
 			lejp_check_path_match(ctx);
-			if (ctx->callback(ctx, LEJPCB_PAIR_NAME)) {
-				ret = LEJP_REJECT_CALLBACK;
-				goto reject;
-			}
+			if (ctx->pst[ctx->pst_sp].callback(ctx, LEJPCB_PAIR_NAME))
+				goto reject_callback;
 			break;
 
 		case LEJP_MP_VALUE:
-			if (c >= '0' && c <= '9') {
+			if (c == '-' || (c >= '0' && c <= '9')) {
 				ctx->npos = 0;
 				ctx->dcount = 0;
 				ctx->f = 0;
@@ -387,10 +448,9 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 				c = LEJP_MP_STRING;
 				ctx->npos = 0;
 				ctx->buf[0] = '\0';
-				if (ctx->callback(ctx, LEJPCB_VAL_STR_START)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				if (ctx->pst[ctx->pst_sp].callback(ctx,
+							LEJPCB_VAL_STR_START))
+					goto reject_callback;
 				goto add_stack_level;
 
 			case '{':
@@ -398,10 +458,9 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 				ctx->st[ctx->sp].s = LEJP_MP_COMMA_OR_END;
 				c = LEJP_MEMBERS;
 				lejp_check_path_match(ctx);
-				if (ctx->callback(ctx, LEJPCB_OBJECT_START)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				if (ctx->pst[ctx->pst_sp].callback(ctx,
+							LEJPCB_OBJECT_START))
+					goto reject_callback;
 				ctx->path_match = 0;
 				goto add_stack_level;
 
@@ -409,15 +468,13 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 				/* push */
 				ctx->st[ctx->sp].s = LEJP_MP_ARRAY_END;
 				c = LEJP_MP_VALUE;
-				ctx->path[ctx->ppos++] = '[';
-				ctx->path[ctx->ppos++] = ']';
-				ctx->path[ctx->ppos] = '\0';
-				if (ctx->callback(ctx, LEJPCB_ARRAY_START)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				ctx->path[ctx->pst[ctx->pst_sp].ppos++] = '[';
+				ctx->path[ctx->pst[ctx->pst_sp].ppos++] = ']';
+				ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
+				if (ctx->pst[ctx->pst_sp].callback(ctx, LEJPCB_ARRAY_START))
+					goto reject_callback;
 				ctx->i[ctx->ipos++] = 0;
-				if (ctx->ipos > ARRAY_SIZE(ctx->i)) {
+				if (ctx->ipos > LWS_ARRAY_SIZE(ctx->i)) {
 					ret = LEJP_REJECT_MP_DELIM_ISTACK;
 					goto reject;
 				}
@@ -425,22 +482,33 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 
 			case ']':
 				/* pop */
+				if (!ctx->sp) { /* JSON can't end on ] */
+					ret = LEJP_REJECT_MP_C_OR_E_UNDERF;
+					goto reject;
+				}
 				ctx->sp--;
 				if (ctx->st[ctx->sp].s != LEJP_MP_ARRAY_END) {
 					ret = LEJP_REJECT_MP_C_OR_E_NOTARRAY;
 					goto reject;
 				}
 				/* drop the path [n] bit */
-				ctx->ppos = ctx->st[ctx->sp - 1].p;
-				ctx->ipos = ctx->st[ctx->sp - 1].i;
-				ctx->path[ctx->ppos] = '\0';
+				if (ctx->sp) {
+					ctx->pst[ctx->pst_sp].ppos =
+							ctx->st[ctx->sp - 1].p;
+					ctx->ipos = ctx->st[ctx->sp - 1].i;
+				}
+				ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 				if (ctx->path_match &&
-					       ctx->ppos <= ctx->path_match_len)
+				    ctx->pst[ctx->pst_sp].ppos <= ctx->path_match_len)
 					/*
 					 * we shrank the path to be
 					 * smaller than the matching point
 					 */
 					ctx->path_match = 0;
+				if (ctx->outer_array && !ctx->sp) { /* ended on ] */
+					n = LEJPCB_ARRAY_END;
+					goto completed;
+				}
 				goto array_end;
 
 			case 't': /* true */
@@ -469,7 +537,7 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 				goto append_npos;
 			}
 
-			if (ctx->dcount < 10 && c >= '0' && c <= '9') {
+			if (ctx->dcount < 20 && c >= '0' && c <= '9') {
 				if (ctx->f & LEJP_SEEN_POINT)
 					ctx->f |= LEJP_SEEN_POST_POINT;
 				ctx->dcount++;
@@ -510,15 +578,13 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 
 			ctx->buf[ctx->npos] = '\0';
 			if (ctx->f & LEJP_SEEN_POINT) {
-				if (ctx->callback(ctx, LEJPCB_VAL_NUM_FLOAT)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				if (ctx->pst[ctx->pst_sp].callback(ctx,
+							LEJPCB_VAL_NUM_FLOAT))
+					goto reject_callback;
 			} else {
-				if (ctx->callback(ctx, LEJPCB_VAL_NUM_INT)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				if (ctx->pst[ctx->pst_sp].callback(ctx,
+							LEJPCB_VAL_NUM_INT))
+					goto reject_callback;
 			}
 
 			/* then this is the post-number character, loop */
@@ -546,37 +612,34 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 			case 3:
 				ctx->buf[0] = '1';
 				ctx->buf[1] = '\0';
-				if (ctx->callback(ctx, LEJPCB_VAL_TRUE)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				if (ctx->pst[ctx->pst_sp].callback(ctx,
+								LEJPCB_VAL_TRUE))
+					goto reject_callback;
 				break;
 			case 8:
 				ctx->buf[0] = '0';
 				ctx->buf[1] = '\0';
-				if (ctx->callback(ctx, LEJPCB_VAL_FALSE)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				if (ctx->pst[ctx->pst_sp].callback(ctx,
+								LEJPCB_VAL_FALSE))
+					goto reject_callback;
 				break;
 			case 12:
 				ctx->buf[0] = '\0';
-				if (ctx->callback(ctx, LEJPCB_VAL_NULL)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				if (ctx->pst[ctx->pst_sp].callback(ctx,
+								LEJPCB_VAL_NULL))
+					goto reject_callback;
 				break;
 			}
 			ctx->st[ctx->sp].s = LEJP_MP_COMMA_OR_END;
 			break;
 
 		case LEJP_MP_COMMA_OR_END:
-			ctx->path[ctx->ppos] = '\0';
+			ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 			if (c == ',') {
 				/* increment this stack level's index */
 				ctx->st[ctx->sp].s = LEJP_M_P;
 				if (!ctx->sp) {
-					ctx->ppos = 0;
+					ctx->pst[ctx->pst_sp].ppos = 0;
 					/*
 					 * since we came back to root level,
 					 * no path can still match
@@ -584,10 +647,10 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 					ctx->path_match = 0;
 					break;
 				}
-				ctx->ppos = ctx->st[ctx->sp - 1].p;
-				ctx->path[ctx->ppos] = '\0';
+				ctx->pst[ctx->pst_sp].ppos = ctx->st[ctx->sp - 1].p;
+				ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 				if (ctx->path_match &&
-					       ctx->ppos <= ctx->path_match_len)
+				    ctx->pst[ctx->pst_sp].ppos <= ctx->path_match_len)
 					/*
 					 * we shrank the path to be
 					 * smaller than the matching point
@@ -613,70 +676,81 @@ lejp_parse(struct lejp_ctx *ctx, const unsigned char *json, int len)
 					ret = LEJP_REJECT_MP_C_OR_E_NOTARRAY;
 					goto reject;
 				}
+
 				/* drop the path [n] bit */
 				if (ctx->sp) {
-					ctx->ppos = ctx->st[ctx->sp - 1].p;
+					ctx->pst[ctx->pst_sp].ppos =
+							ctx->st[ctx->sp - 1].p;
 					ctx->ipos = ctx->st[ctx->sp - 1].i;
 				}
-				ctx->path[ctx->ppos] = '\0';
+				ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 				if (ctx->path_match &&
-					       ctx->ppos <= ctx->path_match_len)
+				    ctx->pst[ctx->pst_sp].ppos <= ctx->path_match_len)
 					/*
 					 * we shrank the path to be
 					 * smaller than the matching point
 					 */
 					ctx->path_match = 0;
+
+				if (ctx->outer_array && !ctx->sp) { /* ended on ] */
+					n = LEJPCB_ARRAY_END;
+					goto completed;
+				}
 
 				/* do LEJP_MP_ARRAY_END processing */
 				goto redo_character;
 			}
-			if (c == '}') {
-				if (ctx->sp == 0) {
-					lejp_check_path_match(ctx);
-					if (ctx->callback(ctx, LEJPCB_OBJECT_END)) {
-						ret = LEJP_REJECT_CALLBACK;
-						goto reject;
-					}
-					ctx->callback(ctx, LEJPCB_COMPLETE);
-					/* done, return unused amount */
-					return len;
-				}
-				/* pop */
-				ctx->sp--;
-				if (ctx->sp) {
-					ctx->ppos = ctx->st[ctx->sp - 1].p;
-					ctx->ipos = ctx->st[ctx->sp - 1].i;
-				}
-				ctx->path[ctx->ppos] = '\0';
-				if (ctx->path_match &&
-					       ctx->ppos <= ctx->path_match_len)
-					/*
-					 * we shrank the path to be
-					 * smaller than the matching point
-					 */
-					ctx->path_match = 0;
+			if (c != '}') {
+				ret = LEJP_REJECT_MP_C_OR_E_NEITHER;
+				goto reject;
+			}
+			if (!ctx->sp) {
+				n = LEJPCB_OBJECT_END;
+completed:
 				lejp_check_path_match(ctx);
-				if (ctx->callback(ctx, LEJPCB_OBJECT_END)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
-				break;
+				if (ctx->pst[ctx->pst_sp].callback(ctx, n) ||
+				    ctx->pst[ctx->pst_sp].callback(ctx,
+							    LEJPCB_COMPLETE))
+					goto reject_callback;
+
+				/* done, return unused amount */
+				return len;
 			}
 
-			ret = LEJP_REJECT_MP_C_OR_E_NEITHER;
-			goto reject;
+			/* pop */
+pop_level:
+			ctx->sp--;
+			if (ctx->sp) {
+				ctx->pst[ctx->pst_sp].ppos = ctx->st[ctx->sp].p;
+				ctx->ipos = ctx->st[ctx->sp].i;
+			}
+			ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
+			if (ctx->path_match &&
+			    ctx->pst[ctx->pst_sp].ppos <= ctx->path_match_len)
+				/*
+				 * we shrank the path to be
+				 * smaller than the matching point
+				 */
+				ctx->path_match = 0;
+
+			lejp_check_path_match(ctx);
+			if (ctx->pst[ctx->pst_sp].callback(ctx,
+							   LEJPCB_OBJECT_END))
+				goto reject_callback;
+			break;
 
 		case LEJP_MP_ARRAY_END:
 array_end:
-			ctx->path[ctx->ppos] = '\0';
+			ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 			if (c == ',') {
 				/* increment this stack level's index */
 				if (ctx->ipos)
 					ctx->i[ctx->ipos - 1]++;
 				ctx->st[ctx->sp].s = LEJP_MP_VALUE;
 				if (ctx->sp)
-					ctx->ppos = ctx->st[ctx->sp - 1].p;
-				ctx->path[ctx->ppos] = '\0';
+					ctx->pst[ctx->pst_sp].ppos =
+							ctx->st[ctx->sp - 1].p;
+				ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 				break;
 			}
 			if (c != ']') {
@@ -685,7 +759,7 @@ array_end:
 			}
 
 			ctx->st[ctx->sp].s = LEJP_MP_COMMA_OR_END;
-			ctx->callback(ctx, LEJPCB_ARRAY_END);
+			ctx->pst[ctx->pst_sp].callback(ctx, LEJPCB_ARRAY_END);
 			break;
 		}
 
@@ -696,31 +770,31 @@ emit_string_char:
 			/* assemble the string value into chunks */
 			ctx->buf[ctx->npos++] = c;
 			if (ctx->npos == sizeof(ctx->buf) - 1) {
-				if (ctx->callback(ctx, LEJPCB_VAL_STR_CHUNK)) {
-					ret = LEJP_REJECT_CALLBACK;
-					goto reject;
-				}
+				if (ctx->pst[ctx->pst_sp].callback(ctx,
+							  LEJPCB_VAL_STR_CHUNK))
+					goto reject_callback;
 				ctx->npos = 0;
 			}
 			continue;
 		}
 		/* name part of name:value pair */
-		ctx->path[ctx->ppos++] = c;
+		ctx->path[ctx->pst[ctx->pst_sp].ppos++] = c;
 		continue;
 
 add_stack_level:
 		/* push on to the object stack */
-		if (ctx->ppos && ctx->st[ctx->sp].s != LEJP_MP_COMMA_OR_END &&
-				ctx->st[ctx->sp].s != LEJP_MP_ARRAY_END)
-			ctx->path[ctx->ppos++] = '.';
+		if (ctx->pst[ctx->pst_sp].ppos &&
+		    ctx->st[ctx->sp].s != LEJP_MP_COMMA_OR_END &&
+		    ctx->st[ctx->sp].s != LEJP_MP_ARRAY_END)
+			ctx->path[ctx->pst[ctx->pst_sp].ppos++] = '.';
 
-		ctx->st[ctx->sp].p = ctx->ppos;
+		ctx->st[ctx->sp].p = ctx->pst[ctx->pst_sp].ppos;
 		ctx->st[ctx->sp].i = ctx->ipos;
-		if (++ctx->sp == ARRAY_SIZE(ctx->st)) {
+		if (++ctx->sp == LWS_ARRAY_SIZE(ctx->st)) {
 			ret = LEJP_REJECT_STACK_OVERFLOW;
 			goto reject;
 		}
-		ctx->path[ctx->ppos] = '\0';
+		ctx->path[ctx->pst[ctx->pst_sp].ppos] = '\0';
 		ctx->st[ctx->sp].s = c;
 		ctx->st[ctx->sp].b = 0;
 		continue;
@@ -740,7 +814,70 @@ redo_character:
 
 	return LEJP_CONTINUE;
 
+
+reject_callback:
+	ret = LEJP_REJECT_CALLBACK;
+
 reject:
-	ctx->callback(ctx, LEJPCB_FAILED);
+	ctx->pst[ctx->pst_sp].callback(ctx, LEJPCB_FAILED);
 	return ret;
+}
+
+int
+lejp_parser_push(struct lejp_ctx *ctx, void *user, const char * const *paths,
+		 unsigned char paths_count, lejp_callback lejp_cb)
+{
+	struct _lejp_parsing_stack *p;
+
+	if (ctx->pst_sp + 1 == LEJP_MAX_PARSING_STACK_DEPTH)
+		return -1;
+
+	lejp_check_path_match(ctx);
+
+	ctx->pst[ctx->pst_sp].path_match = ctx->path_match;
+	ctx->pst_sp++;
+
+	p = &ctx->pst[ctx->pst_sp];
+	p->user = user;
+	p->callback = lejp_cb;
+	p->paths = paths;
+	p->count_paths = paths_count;
+	p->ppos = 0;
+
+	ctx->path_match = 0;
+	lejp_check_path_match(ctx);
+
+	lwsl_debug("%s: pushed parser stack to %d (path %s)\n", __func__,
+		   ctx->pst_sp, ctx->path);
+
+	return 0;
+}
+
+int
+lejp_parser_pop(struct lejp_ctx *ctx)
+{
+	if (!ctx->pst_sp)
+		return -1;
+
+	ctx->pst_sp--;
+	lwsl_debug("%s: popped parser stack to %d\n", __func__, ctx->pst_sp);
+
+	ctx->path_match = 0; /* force it to check */
+	lejp_check_path_match(ctx);
+
+	return 0;
+}
+
+const char *
+lejp_error_to_string(int e)
+{
+	if (e > 0)
+		e = 0;
+	else
+		e = -e;
+
+	if (e >= (int)LWS_ARRAY_SIZE(parser_errs))
+		return "Unknown error";
+
+	return parser_errs[e];
 }

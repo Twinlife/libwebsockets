@@ -1,85 +1,148 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010-2017 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2019 Andy Green <andy@warmcat.com>
  *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation:
- *  version 2.1 of the License.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to
+ * deal in the Software without restriction, including without limitation the
+ * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+ * sell copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
  *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
  *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
- *  MA  02110-1301  USA
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
  */
 
-#include "private-libwebsockets.h"
+#include "private-lib-core.h"
+#include "private-lib-tls.h"
+
+#if defined(LWS_WITH_NETWORK)
+#if defined(LWS_WITH_MBEDTLS) || (defined(OPENSSL_VERSION_NUMBER) && \
+				  OPENSSL_VERSION_NUMBER >= 0x10002000L)
+static int
+alpn_cb(SSL *s, const unsigned char **out, unsigned char *outlen,
+	const unsigned char *in, unsigned int inlen, void *arg)
+{
+#if !defined(LWS_WITH_MBEDTLS)
+	struct alpn_ctx *alpn_ctx = (struct alpn_ctx *)arg;
+
+	if (SSL_select_next_proto((unsigned char **)out, outlen, alpn_ctx->data,
+				  alpn_ctx->len, in, inlen) !=
+	    OPENSSL_NPN_NEGOTIATED)
+		return SSL_TLSEXT_ERR_NOACK;
+#endif
+
+	return SSL_TLSEXT_ERR_OK;
+}
+#endif
 
 int
-lws_ssl_anybody_has_buffered_read_tsi(struct lws_context *context, int tsi)
+lws_tls_restrict_borrow(struct lws_context *context)
 {
-	struct lws_context_per_thread *pt = &context->pt[tsi];
-	struct lws *wsi, *wsi_next;
+	if (!context->simultaneous_ssl_restriction)
+		return 0;
 
-	wsi = pt->pending_read_list;
-	while (wsi) {
-		wsi_next = wsi->pending_read_list_next;
-		pt->fds[wsi->position_in_fds_table].revents |=
-			pt->fds[wsi->position_in_fds_table].events & LWS_POLLIN;
-		if (pt->fds[wsi->position_in_fds_table].revents & LWS_POLLIN)
-			return 1;
-
-		wsi = wsi_next;
+	if (context->simultaneous_ssl >= context->simultaneous_ssl_restriction) {
+		lwsl_notice("%s: tls connection limit %d\n", __func__,
+			    context->simultaneous_ssl);
+		return 1;
 	}
+
+	if (++context->simultaneous_ssl == context->simultaneous_ssl_restriction)
+		/* that was the last allowed SSL connection */
+		lws_gate_accepts(context, 0);
+
+	lwsl_info("%s: %d -> %d\n", __func__,
+		  context->simultaneous_ssl - 1,
+		  context->simultaneous_ssl);
 
 	return 0;
 }
 
 void
-__lws_ssl_remove_wsi_from_buffered_list(struct lws *wsi)
+lws_tls_restrict_return(struct lws_context *context)
 {
-	struct lws_context *context = wsi->context;
-	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
-
-	if (!wsi->pending_read_list_prev &&
-	    !wsi->pending_read_list_next &&
-	    pt->pending_read_list != wsi)
-		/* we are not on the list */
-		return;
-
-	/* point previous guy's next to our next */
-	if (!wsi->pending_read_list_prev)
-		pt->pending_read_list = wsi->pending_read_list_next;
-	else
-		wsi->pending_read_list_prev->pending_read_list_next =
-			wsi->pending_read_list_next;
-
-	/* point next guy's previous to our previous */
-	if (wsi->pending_read_list_next)
-		wsi->pending_read_list_next->pending_read_list_prev =
-			wsi->pending_read_list_prev;
-
-	wsi->pending_read_list_prev = NULL;
-	wsi->pending_read_list_next = NULL;
+	if (context->simultaneous_ssl_restriction) {
+		if (context->simultaneous_ssl-- ==
+					context->simultaneous_ssl_restriction)
+			/* we made space and can do an accept */
+			lws_gate_accepts(context, 1);
+		lwsl_info("%s: %d -> %d\n", __func__,
+			  context->simultaneous_ssl + 1,
+			  context->simultaneous_ssl);
+	}
 }
 
 void
-lws_ssl_remove_wsi_from_buffered_list(struct lws *wsi)
+lws_context_init_alpn(struct lws_vhost *vhost)
 {
-	struct lws_context_per_thread *pt = &wsi->context->pt[(int)wsi->tsi];
+#if defined(LWS_WITH_MBEDTLS) || (defined(OPENSSL_VERSION_NUMBER) && \
+				  OPENSSL_VERSION_NUMBER >= 0x10002000L)
+	const char *alpn_comma = vhost->context->tls.alpn_default;
 
-	lws_pt_lock(pt, __func__);
-	__lws_ssl_remove_wsi_from_buffered_list(wsi);
-	lws_pt_unlock(pt);
+	if (vhost->tls.alpn)
+		alpn_comma = vhost->tls.alpn;
+
+	lwsl_info(" Server '%s' advertising ALPN: %s\n",
+		    vhost->name, alpn_comma);
+	vhost->tls.alpn_ctx.len = lws_alpn_comma_to_openssl(alpn_comma,
+					vhost->tls.alpn_ctx.data,
+					sizeof(vhost->tls.alpn_ctx.data) - 1);
+
+	SSL_CTX_set_alpn_select_cb(vhost->tls.ssl_ctx, alpn_cb,
+				   &vhost->tls.alpn_ctx);
+#else
+	lwsl_err(
+		" HTTP2 / ALPN configured but not supported by OpenSSL 0x%lx\n",
+		    OPENSSL_VERSION_NUMBER);
+#endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
 }
 
-#if defined(LWS_WITH_ESP32)
+int
+lws_tls_server_conn_alpn(struct lws *wsi)
+{
+#if defined(LWS_WITH_MBEDTLS) || (defined(OPENSSL_VERSION_NUMBER) && \
+				  OPENSSL_VERSION_NUMBER >= 0x10002000L)
+	const unsigned char *name = NULL;
+	char cstr[10];
+	unsigned len;
+
+	if (!wsi->tls.ssl)
+		return 0;
+
+	SSL_get0_alpn_selected(wsi->tls.ssl, &name, &len);
+	if (!len) {
+		lwsl_info("no ALPN upgrade\n");
+		return 0;
+	}
+
+	if (len > sizeof(cstr) - 1)
+		len = sizeof(cstr) - 1;
+
+	memcpy(cstr, name, len);
+	cstr[len] = '\0';
+
+	lwsl_info("negotiated '%s' using ALPN\n", cstr);
+	wsi->tls.use_ssl |= LCCSCF_USE_SSL;
+
+	return lws_role_call_alpn_negotiated(wsi, (const char *)cstr);
+#endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
+
+	return 0;
+}
+#endif
+
+#if !defined(LWS_PLAT_OPTEE) && !defined(OPTEE_DEV_KIT)
+#if defined(LWS_PLAT_FREERTOS) && !defined(LWS_AMAZON_RTOS)
 int alloc_file(struct lws_context *context, const char *filename, uint8_t **buf,
 	       lws_filepos_t *amount)
 {
@@ -166,14 +229,25 @@ bail:
 }
 #endif
 
+/*
+ * filename: NULL means use buffer inbuf length inlen directly, otherwise
+ *           load the file "filename" into an allocated buffer.
+ *
+ * Allocates a separate DER output buffer if inbuf / inlen are the input,
+ * since the
+ *
+ * Contents may be PEM or DER: returns with buf pointing to DER and amount
+ * set to the DER length.
+ */
+
 int
 lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
-			const char *inbuf, lws_filepos_t inlen,
-		      uint8_t **buf, lws_filepos_t *amount)
+			      const char *inbuf, lws_filepos_t inlen,
+			      uint8_t **buf, lws_filepos_t *amount)
 {
-	const uint8_t *pem, *p, *end;
-	uint8_t *q;
+	uint8_t *pem = NULL, *p, *end, *opem;
 	lws_filepos_t len;
+	uint8_t *q;
 	int n;
 
 	if (filename) {
@@ -181,28 +255,60 @@ lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
 		if (n)
 			return n;
 	} else {
-		pem = (const uint8_t *)inbuf;
+		pem = (uint8_t *)inbuf;
 		len = inlen;
 	}
 
+	opem = p = pem;
+	end = p + len;
+
+	if (strncmp((char *)p, "-----", 5)) {
+
+		/* take it as being already DER */
+
+		pem = lws_malloc((size_t)inlen, "alloc_der");
+		if (!pem)
+			return 1;
+
+		memcpy(pem, inbuf, (size_t)inlen);
+
+		*buf = pem;
+		*amount = inlen;
+
+		return 0;
+	}
+
+	/* PEM -> DER */
+
+	if (!filename) {
+		/* we don't know if it's in const memory... alloc the output */
+		pem = lws_malloc(((size_t)inlen * 3) / 4, "alloc_der");
+		if (!pem) {
+			lwsl_err("a\n");
+			return 1;
+		}
+
+
+	} /* else overwrite the allocated, b64 input with decoded DER */
+
 	/* trim the first line */
 
-	p = pem;
-	end = p + len;
-	if (strncmp((char *)p, "-----", 5))
-		goto bail;
 	p += 5;
 	while (p < end && *p != '\n' && *p != '-')
 		p++;
 
-	if (*p != '-')
+	if (*p != '-') {
+		lwsl_err("b\n");
 		goto bail;
+	}
 
 	while (p < end && *p != '\n')
 		p++;
 
-	if (p >= end)
+	if (p >= end) {
+		lwsl_err("c\n");
 		goto bail;
+	}
 
 	p++;
 
@@ -210,16 +316,22 @@ lws_tls_alloc_pem_to_der_file(struct lws_context *context, const char *filename,
 
 	q = (uint8_t *)end - 2;
 
-	while (q > pem && *q != '\n')
+	while (q > opem && *q != '\n')
 		q--;
 
-	if (*q != '\n')
+	if (*q != '\n') {
+		lwsl_err("d\n");
 		goto bail;
+	}
 
-	*q = '\0';
+	/* we can't write into the input buffer for mem, since it may be in RO
+	 * const segment
+	 */
+	if (filename)
+		*q = '\0';
 
-	*amount = lws_b64_decode_string((char *)p, (char *)pem,
-					(int)(long long)len);
+	*amount = lws_b64_decode_string_len((char *)p, lws_ptr_diff(q, p),
+					    (char *)pem, (int)(long long)len);
 	*buf = (uint8_t *)pem;
 
 	return 0;
@@ -230,51 +342,12 @@ bail:
 	return 4;
 }
 
-int
-lws_tls_check_cert_lifetime(struct lws_vhost *v)
-{
-	union lws_tls_cert_info_results ir;
-	time_t now = (time_t)lws_now_secs(), life = 0;
-	struct lws_acme_cert_aging_args caa;
-	int n;
 
-	if (v->ssl_ctx && !v->skipped_certs) {
+#endif
 
-		if (now < 1464083026) /* May 2016 */
-			/* our clock is wrong and we can't judge the certs */
-			return -1;
+#if !defined(LWS_PLAT_FREERTOS) && !defined(LWS_PLAT_OPTEE) && !defined(OPTEE_DEV_KIT)
 
-		n = lws_tls_vhost_cert_info(v, LWS_TLS_CERT_INFO_VALIDITY_TO, &ir, 0);
-		if (n)
-			return 1;
 
-		life = (ir.time - now) / (24 * 3600);
-		lwsl_notice("   vhost %s: cert expiry: %dd\n", v->name, (int)life);
-	} else
-		lwsl_notice("   vhost %s: no cert\n", v->name);
-
-	memset(&caa, 0, sizeof(caa));
-	caa.vh = v;
-	lws_broadcast(v->context, LWS_CALLBACK_VHOST_CERT_AGING, (void *)&caa,
-		      (size_t)(ssize_t)life);
-
-	return 0;
-}
-
-int
-lws_tls_check_all_cert_lifetimes(struct lws_context *context)
-{
-	struct lws_vhost *v = context->vhost_list;
-
-	while (v) {
-		if (lws_tls_check_cert_lifetime(v) < 0)
-			return -1;
-		v = v->vhost_next;
-	}
-
-	return 0;
-}
-#if !defined(LWS_WITH_ESP32) && !defined(LWS_PLAT_OPTEE)
 static int
 lws_tls_extant(const char *name)
 {
@@ -321,14 +394,15 @@ lws_tls_extant(const char *name)
  * 4) LWS_TLS_EXTANT_YES: The certs are present with the correct name and we
  *    have the rights to read them.
  */
+
 enum lws_tls_extant
 lws_tls_use_any_upgrade_check_extant(const char *name)
 {
-#if !defined(LWS_PLAT_OPTEE)
+#if !defined(LWS_PLAT_OPTEE) && !defined(LWS_AMAZON_RTOS)
 
 	int n;
 
-#if !defined(LWS_WITH_ESP32)
+#if !defined(LWS_PLAT_FREERTOS)
 	char buf[256];
 
 	lws_snprintf(buf, sizeof(buf) - 1, "%s.upd", name);
@@ -376,105 +450,4 @@ lws_tls_use_any_upgrade_check_extant(const char *name)
 #endif
 #endif
 	return LWS_TLS_EXTANT_YES;
-}
-
-/*
- * LWS_TLS_EXTANT_NO         : skip adding the cert
- * LWS_TLS_EXTANT_YES        : use the cert and private key paths normally
- * LWS_TLS_EXTANT_ALTERNATIVE: normal paths not usable, try alternate if poss
- */
-enum lws_tls_extant
-lws_tls_generic_cert_checks(struct lws_vhost *vhost, const char *cert,
-			    const char *private_key)
-{
-	int n, m;
-
-	/*
-	 * The user code can choose to either pass the cert and
-	 * key filepaths using the info members like this, or it can
-	 * leave them NULL; force the vhost SSL_CTX init using the info
-	 * options flag LWS_SERVER_OPTION_CREATE_VHOST_SSL_CTX; and
-	 * set up the cert himself using the user callback
-	 * LWS_CALLBACK_OPENSSL_LOAD_EXTRA_SERVER_VERIFY_CERTS, which
-	 * happened just above and has the vhost SSL_CTX * in the user
-	 * parameter.
-	 */
-
-	n = lws_tls_use_any_upgrade_check_extant(cert);
-	if (n == LWS_TLS_EXTANT_ALTERNATIVE)
-		return LWS_TLS_EXTANT_ALTERNATIVE;
-	m = lws_tls_use_any_upgrade_check_extant(private_key);
-	if (m == LWS_TLS_EXTANT_ALTERNATIVE)
-		return LWS_TLS_EXTANT_ALTERNATIVE;
-
-	if ((n == LWS_TLS_EXTANT_NO || m == LWS_TLS_EXTANT_NO) &&
-	    (vhost->options & LWS_SERVER_OPTION_IGNORE_MISSING_CERT)) {
-		lwsl_notice("Ignoring missing %s or %s\n", cert, private_key);
-		vhost->skipped_certs = 1;
-
-		return LWS_TLS_EXTANT_NO;
-	}
-
-	/*
-	 * the cert + key exist
-	 */
-
-	return LWS_TLS_EXTANT_YES;
-}
-
-#if !defined(LWS_NO_SERVER)
-/*
- * update the cert for every vhost using the given path
- */
-
-LWS_VISIBLE int
-lws_tls_cert_updated(struct lws_context *context, const char *certpath,
-		     const char *keypath,
-		     const char *mem_cert, size_t len_mem_cert,
-		     const char *mem_privkey, size_t len_mem_privkey)
-{
-	struct lws wsi;
-
-	wsi.context = context;
-
-	lws_start_foreach_ll(struct lws_vhost *, v, context->vhost_list) {
-		wsi.vhost = v;
-		if (v->alloc_cert_path && v->key_path &&
-		    !strcmp(v->alloc_cert_path, certpath) &&
-		    !strcmp(v->key_path, keypath)) {
-			lws_tls_server_certs_load(v, &wsi, certpath, keypath,
-						  mem_cert, len_mem_cert,
-						  mem_privkey, len_mem_privkey);
-
-			if (v->skipped_certs)
-				lwsl_notice("%s: vhost %s: cert unset\n",
-					    __func__, v->name);
-		}
-	} lws_end_foreach_ll(v, vhost_next);
-
-	return 0;
-}
-#endif
-
-int
-lws_gate_accepts(struct lws_context *context, int on)
-{
-	struct lws_vhost *v = context->vhost_list;
-
-	lwsl_notice("%s: on = %d\n", __func__, on);
-	context->ssl_gate_accepts = !on;
-#if defined(LWS_WITH_STATS)
-	context->updated = 1;
-#endif
-
-	while (v) {
-		if (v->use_ssl && v->lserv_wsi &&
-		    lws_change_pollfd(v->lserv_wsi, (LWS_POLLIN) * !on,
-				      (LWS_POLLIN) * on))
-			lwsl_notice("Unable to set accept POLLIN %d\n", on);
-
-		v = v->vhost_next;
-	}
-
-	return 0;
 }

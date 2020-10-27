@@ -1,7 +1,7 @@
 /*
  * Example embedded sshd server using libwebsockets sshd plugin
  *
- * Copyright (C) 2017 Andy Green <andy@warmcat.com>
+ * Written in 2010-2019 by Andy Green <andy@warmcat.com>
  *
  * This file is made available under the Creative Commons CC0 1.0
  * Universal Public Domain Dedication.
@@ -33,7 +33,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
-
+#include <errno.h>
 /* import the whole of lws-plugin-sshd-base statically */
 #include <lws-plugin-sshd-static-build-includes.h>
 
@@ -202,10 +202,11 @@ ssh_ops_rx(void *_priv, struct lws *wsi, const uint8_t *buf, uint32_t len)
 	fd = lws_get_socket_fd(wsi_stdin);
 
 	if (*buf != 0x0d) {
-		if (write(fd, buf, len) != len)
+		if (write(fd, buf, len) != (int)len)
 			return -1;
 		if (priv->pty_in_echo) {
-			lws_ring_insert(priv->ring_stdout, buf, 1);
+			if (!lws_ring_insert(priv->ring_stdout, buf, 1))
+				lwsl_notice("dropping...\n");
 			lws_callback_on_writable(wsi);
 		}
 	} else {
@@ -217,7 +218,8 @@ ssh_ops_rx(void *_priv, struct lws *wsi, const uint8_t *buf, uint32_t len)
 		if (priv->pty_in_echo) {
 			bbuf[0] = 0x0d;
 			bbuf[1] = 0x0a;
-			lws_ring_insert(priv->ring_stdout, bbuf, 2);
+			if (!lws_ring_insert(priv->ring_stdout, bbuf, 2))
+				lwsl_notice("dropping...\n");
 			lws_callback_on_writable(wsi);
 		}
 	}
@@ -230,7 +232,7 @@ ssh_ops_rx(void *_priv, struct lws *wsi, const uint8_t *buf, uint32_t len)
 static size_t
 ssh_ops_get_server_key(struct lws *wsi, uint8_t *buf, size_t len)
 {
-	int fd = open(TEST_SERVER_KEY_PATH, O_RDONLY), n;
+	int fd = lws_open(TEST_SERVER_KEY_PATH, O_RDONLY), n;
 
 	if (fd == -1) {
 		lwsl_err("%s: unable to open %s for read: %s\n", __func__,
@@ -253,7 +255,7 @@ ssh_ops_get_server_key(struct lws *wsi, uint8_t *buf, size_t len)
 static size_t
 ssh_ops_set_server_key(struct lws *wsi, uint8_t *buf, size_t len)
 {
-	int fd = open(TEST_SERVER_KEY_PATH, O_CREAT | O_TRUNC | O_RDWR, 0600);
+	int fd = lws_open(TEST_SERVER_KEY_PATH, O_CREAT | O_TRUNC | O_RDWR, 0600);
 	int n;
 
 	lwsl_notice("%s: %d\n", __func__, fd);
@@ -281,7 +283,7 @@ static int
 ssh_ops_is_pubkey_authorized(const char *username, const char *type,
 				 const uint8_t *peer, int peer_len)
 {
-	char *aps = NULL, *p, *ps;
+	char *aps, *p, *ps;
 	int n = strlen(type), alen = 2048, ret = 2, len;
 	size_t s = 0;
 
@@ -340,8 +342,8 @@ ssh_ops_is_pubkey_authorized(const char *username, const char *type,
 	 * <len32>E<len32>N that the peer sends us
 	 */
 
-	if (memcmp(peer, ps, peer_len)) {
-		lwsl_notice("factors mismatch\n");
+	if (lws_timingsafe_bcmp(peer, ps, peer_len)) {
+		lwsl_info("factors mismatch\n");
 		goto bail;
 	}
 
@@ -377,7 +379,7 @@ ssh_cgi_env_add(struct sshd_instance_priv *priv, const char *name,
 		return 1;
 	}
 
-	pvo->value = malloc(strlen(name) + 1);
+	pvo->value = malloc(strlen(value) + 1);
 	if (!pvo->value) {
 		free((char *)pvo->name);
 		free(pvo);
@@ -456,7 +458,6 @@ ssh_ops_child_process_io(void *_priv, struct lws *wsi,
 	struct sshd_instance_priv *priv = _priv;
 	struct lws_ring *r = priv->ring_stdout;
 	void *rp;
-	uint8_t buf[256], *p, *d;
 	size_t bytes;
 	int n, m;
 
@@ -479,6 +480,8 @@ ssh_ops_child_process_io(void *_priv, struct lws *wsi,
 			break;
 		}
 		if (priv->pty_in_bloat_nl_to_crnl) {
+			uint8_t buf[256], *p, *d;
+
 			if (bytes != 1)
 				n = bytes / 2;
 			else
@@ -687,7 +690,7 @@ int main()
 
 	n = 0;
 	while (!n  && !force_exit)
-		n = lws_service(context, 500);
+		n = lws_service(context, 0);
 
 	ret = 0;
 
