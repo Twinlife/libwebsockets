@@ -50,6 +50,7 @@ lws_issue_raw(struct lws *wsi, unsigned char *buf, size_t len)
 	 * event loop to handle pending.  Since that guarantees extending any
 	 * existing buflist_out it's inefficient.
 	 */
+#if 0 // --twinlife--2020-10-16 (fix compilation)
 	if (0 && buf && wsi->could_have_pending) {
 		lwsl_hexdump_level(LLL_INFO, buf, len);
 		lwsl_info("** %p: vh: %s, prot: %s, role %s: "
@@ -58,7 +59,7 @@ lws_issue_raw(struct lws *wsi, unsigned char *buf, size_t len)
 			  wsi->a.protocol->name, wsi->role_ops->name,
 			  (unsigned long)len);
 	}
-
+#endif
 	lws_stats_bump(pt, LWSSTATS_C_API_WRITE, 1);
 
 	/* just ignore sends after we cleared the truncation buffer */

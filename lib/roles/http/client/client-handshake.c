@@ -429,6 +429,21 @@ lws_client_connect_3_connect(struct lws *wsi, const char *ads,
 			lwsl_info("%s: connect check take as FAILED\n", __func__);
 		}
 #else
+                // --twinlife--2020-10-16 
+                lws_sockaddr46 sa46;
+                socklen_t rlen = sizeof(sa46);
+
+                /*
+                 * To check if we are connected, we must first use getpeername() because
+                 * getsockopt() will only tell if an error occurred.
+                 */
+                if (getpeername(wsi->desc.sockfd, (struct sockaddr *)&sa46, &rlen) == 0)
+                  goto conn_good;
+
+                if (LWS_ERRNO == LWS_ENOTCONN)
+                  goto try_next_result_fds;
+                // --twinlife--2020-10-16
+
 		/*
 		* this resets SO_ERROR after reading it.  If there's an error
 		* condition the connect definitively failed.
@@ -927,6 +942,7 @@ lws_client_connect_2_dnsreq(struct lws *wsi)
 		break;
 	case ACTIVE_CONNS_MUXED:
 		lwsl_notice("%s: ACTIVE_CONNS_MUXED\n", __func__);
+#if defined(LWS_ROLE_H2) // --twinlife--2020-10-16 (fix compilation)
 		if (lwsi_role_h2(wsi)) {
 
 			if (wsi->a.protocol->callback(wsi,
@@ -938,6 +954,7 @@ lws_client_connect_2_dnsreq(struct lws *wsi)
 			//lwsi_set_state(w, LRS_ESTABLISHED);
 			lws_callback_on_writable(wsi);
 		}
+#endif // --twinlife--2020-10-16 (fix compilation)
 
 		return wsi;
 	case ACTIVE_CONNS_QUEUED:
@@ -1118,12 +1135,12 @@ next_step:
 #endif
 	return lws_client_connect_3_connect(wsi, ads, result, n, NULL);
 
-//#if defined(LWS_WITH_SYS_ASYNC_DNS)
+#if defined(LWS_WITH_SYS_ASYNC_DNS)
 failed1:
 	lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS, "client_connect2");
 
 	return NULL;
-//#endif
+#endif
 }
 
 #if defined(LWS_ROLE_H1) || defined(LWS_ROLE_H2)

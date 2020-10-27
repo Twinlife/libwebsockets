@@ -14,8 +14,10 @@
 
 extern "C" {
 #include <libwebsockets.h>
-#include <private-libwebsockets.h>
 }
+
+#include <private-lib-core.h>
+#include <private-lib-tls.h>
 
 #include "rtc_base/third_party/base64/base64.h"
 
@@ -30,7 +32,6 @@ namespace jni {
 #define TCP_KEEP_ALIVE 60
 #define TCP_KEEP_ALIVE_PROBES 6
 #define TCP_KEEP_ALIVE_INTERVAL 10
-#define PING_PONG_INTERVAL 360
 
 struct userdata {
   Container* container;
@@ -52,7 +53,7 @@ static struct lws_protocols protocols[] = {
 
 static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
-  lwsl_debug("callback wsi=%p reason=%d user=%p in=%p len=%lu", wsi, reason, user, in, (unsigned long)len);
+  lwsl_debug("callback wsi=%p reason=%d user=%p in=%p len=%lu\n", wsi, reason, user, in, (unsigned long)len);
   if (wsi && wsi->user_space && reason != LWS_CALLBACK_EVENT_WAIT_CANCELLED) {
     struct userdata* userdata = (struct userdata*)wsi->user_space;
     if (userdata->container) {
@@ -74,13 +75,20 @@ static void emit_log(int level, const char* msg) {
     __android_log_write(ANDROID_LOG_DEBUG, "lws", msg);
   }
 #endif
+  static long start;
+  struct timeval tv;
+
+  (void)gettimeofday(&tv, 0);
+  if (start == 0)
+    start = tv.tv_sec;
+  fprintf(stderr, "lws[%ld.%06ld] %d: %s", tv.tv_sec - start, tv.tv_usec, level, msg);
 }
 
 Container::Container(ObserverJni* observer) {
 
   observer_ = observer;
   
-  lws_set_log_level(LLL_ERR | LLL_WARN, emit_log);
+  lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE, emit_log);
   
   memset(&info_, 0, sizeof(info_));
   info_.port = CONTEXT_PORT_NO_LISTEN;
@@ -92,7 +100,10 @@ Container::Container(ObserverJni* observer) {
   info_.ka_time = TCP_KEEP_ALIVE;
   info_.ka_probes = TCP_KEEP_ALIVE_PROBES;
   info_.ka_interval = TCP_KEEP_ALIVE_INTERVAL;
-  info_.ws_ping_pong_interval = PING_PONG_INTERVAL;
+  info_.connect_timeout_secs = 10;
+  info_.timeout_secs = 3;
+  info_.ssl_client_options_set = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2;
+  info_.client_ssl_cipher_list = "EDH+aRSA+AES256:EECDH+aRSA+AES256:!SSLv3";
 
   context_ = lws_create_context(&info_);
 
@@ -112,9 +123,9 @@ jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, c
     struct lws_vhost* vhost = lws_create_vhost(context_, &info_);
     if (vhost) {
       if (proxy_address && proxy_port != 0) {
-	vhost->http_proxy_port = proxy_port;
-	strncpy(vhost->http_proxy_address, proxy_address, sizeof(vhost->http_proxy_address) - 1);
-	vhost->http_proxy_address[sizeof(vhost->http_proxy_address) - 1] = '\0';
+	vhost->http.http_proxy_port = proxy_port;
+	strncpy(vhost->http.http_proxy_address, proxy_address, sizeof(vhost->http.http_proxy_address) - 1);
+	vhost->http.http_proxy_address[sizeof(vhost->http.http_proxy_address) - 1] = '\0';
 	if (proxy_username && proxy_password) {
 	  char *auth_token = (char *)lws_malloc(strlen(proxy_username) + strlen(proxy_password) + 2,
 						"container");
@@ -126,12 +137,13 @@ jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, c
 		  sizeof(vhost->proxy_basic_auth_token) - 1);
 	  vhost->proxy_basic_auth_token[sizeof(vhost->proxy_basic_auth_token) - 1] = '\0';
 	  lws_free(auth_token);
+          lwsl_debug("Connect through proxy %s port %d token %s\n", vhost->http.http_proxy_address, vhost->http.http_proxy_port, auth_token);
 	} else {
 	  vhost->proxy_basic_auth_token[0] = '\0';
 	}
       } else {
-	vhost->http_proxy_port = 0;
-	vhost->http_proxy_address[0] = '\0';
+	vhost->http.http_proxy_port = 0;
+	vhost->http.http_proxy_address[0] = '\0';
 	vhost->proxy_basic_auth_token[0] = '\0';
       }
     }
@@ -167,6 +179,7 @@ jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, c
 
 void Container::Service(int timeout) {
 
+  lwsl_debug("%s: service with timeout=%d ms\n", __func__, timeout);
   if (context_) {
     lws_service(context_, timeout);
   }
@@ -215,17 +228,11 @@ void Container::SendCloseMessage(jlong websocket_id) {
   if (context_) {
     struct lws* wsi = get_lws_from_websocket_id(websocket_id);
     if (wsi) {
-      lws_close_status status = LWS_CLOSE_STATUS_GOINGAWAY;
-      unsigned char buffer[2 + LWS_SEND_BUFFER_PRE_PADDING + LWS_SEND_BUFFER_POST_PADDING];
-      unsigned char* data_buffer = buffer + LWS_SEND_BUFFER_PRE_PADDING;
-      unsigned char* p = data_buffer;
-      *p++ = (((int)status) >> 8) & 0xff;
-      *p++ = ((int)status) & 0xff;
-      lws_write(wsi, data_buffer, 2, LWS_WRITE_CLOSE);
+      lws_close_reason(wsi, LWS_CLOSE_STATUS_GOINGAWAY, NULL, 0);
     }
   }
 }
-  
+
 int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
   struct userdata* userdata = NULL;
@@ -310,6 +317,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     break;
 
   case LWS_CALLBACK_WSI_CREATE:
+    lwsl_debug("%s: create wsi %p\n", __func__, wsi);
     pthread_mutex_lock(&jni_lws_list_mutex_);
     wsi->jni_lws_list = jni_lws_list_;
     jni_lws_list_ = wsi;
@@ -317,9 +325,10 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     break;
 
   case LWS_CALLBACK_WSI_DESTROY: {
-    if (wsi->vhost) {
-      lws_vhost_destroy(wsi->vhost);
-      wsi->vhost = NULL;
+    lwsl_debug("%s: destroy wsi %p\n", __func__, wsi);
+    if (wsi->a.vhost) {
+      lws_vhost_destroy(wsi->a.vhost);
+      wsi->a.vhost = NULL;
     }
 
     pthread_mutex_lock(&jni_lws_list_mutex_);

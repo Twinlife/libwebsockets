@@ -8,7 +8,9 @@
 #include "sdk/android/src/jni/jni_helpers.h"
 
 #include <libwebsockets.h>
-#include <private-libwebsockets.h>
+#include <private-lib-core.h>
+#include <private-lib-tls.h>
+#include <private-lib-core-net.h>
 
 #include "container.h"
 #include "observer_jni.h"

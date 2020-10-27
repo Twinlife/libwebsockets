@@ -52,6 +52,7 @@ struct lws_muxable {
 extern "C" {
 #endif
 
+#if 0
 /*
  * All lws_tls...() functions must return this type, converting the
  * native backend result and doing the extra work to determine which one
@@ -68,6 +69,7 @@ enum lws_ssl_capable_status {
 	LWS_SSL_CAPABLE_MORE_SERVICE_WRITE	= -3, /* retry WANT_WRITE */
 	LWS_SSL_CAPABLE_MORE_SERVICE		= -4, /* general retry */
 };
+#endif
 
 #define __lws_sul_insert_us(owner, sul, _us) \
 		(sul)->us = lws_now_usecs() + _us; \
@@ -767,6 +769,10 @@ struct lws {
 #if defined(LWS_WITH_TLS)
 	struct lws_lws_tls		tls;
 #endif
+
+// --twinlife-- 180417
+	struct lws *jni_lws_list;
+// --twinlife-- 180417
 
 	lws_sock_file_fd_type		desc; /* .filefd / .sockfd */
 #if defined(LWS_WITH_STATS)
@@ -1551,7 +1557,7 @@ enum {
 };
 
 #ifdef __cplusplus
-};
+}
 #endif
 
 #endif

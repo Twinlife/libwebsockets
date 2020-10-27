@@ -12,8 +12,11 @@
 
 extern "C" {
 #include <libwebsockets.h>
-#include <private-libwebsockets.h>
 }
+
+#include <private-lib-core.h>
+#include <private-lib-tls.h>
+#include <private-lib-core-net.h>
 
 namespace websocket {
 namespace jni {

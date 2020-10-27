@@ -160,11 +160,15 @@ lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
 #if !defined(LWS_WITH_BORINGSSL) && defined(LWS_HAVE_SSL_EXTRA_CHAIN_CERTS)
 	STACK_OF(X509) *extra_certs = NULL;
 #endif
+#if !defined(LWS_WITH_BORINGSSL)
 	EC_KEY *ecdh, *EC_key = NULL;
 	EVP_PKEY *pkey;
 	X509 *x = NULL;
-	int ecdh_nid;
 	int KeyType;
+#else
+	EC_KEY *ecdh = NULL;
+#endif
+	int ecdh_nid;
 #endif
 	unsigned long error;
 	lws_filepos_t flen;
@@ -433,6 +437,7 @@ check_key:
 #else
 	return 0;
 #endif
+#if !defined(LWS_WITH_BORINGSSL)
 	/* Get the public key from certificate */
 	pkey = X509_get_pubkey(x);
 	if (!pkey) {
@@ -457,15 +462,18 @@ check_key:
 	SSL_CTX_set_tmp_ecdh(vhost->tls.ssl_ctx, EC_key);
 
 	EC_KEY_free(EC_key);
+#endif
 #else
 	lwsl_notice(" OpenSSL doesn't support ECDH\n");
 #endif
 #if !defined(OPENSSL_NO_EC) && !defined(LWS_WITH_BORINGSSL)
 post_ecdh:
 #endif
+#if !defined(LWS_WITH_BORINGSSL)
 	vhost->tls.skipped_certs = 0;
 
 	return 0;
+#endif
 }
 
 int
