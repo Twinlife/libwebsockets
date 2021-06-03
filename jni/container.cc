@@ -12,9 +12,7 @@
 #  include <android/log.h>
 #endif
 
-extern "C" {
 #include <libwebsockets.h>
-}
 
 #include <private-lib-core.h>
 #include <private-lib-tls.h>

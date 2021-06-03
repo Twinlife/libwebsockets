@@ -15,8 +15,6 @@
 #include <unistd.h>
 #include <vector>
 
-#include "rtc_base/thread_checker.h"
-
 namespace websocket {
 namespace jni {
 
