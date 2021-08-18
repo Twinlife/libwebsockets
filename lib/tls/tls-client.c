@@ -38,6 +38,7 @@ lws_ssl_client_connect1(struct lws *wsi, char *errbuf, int len)
 	case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
 		lws_callback_on_writable(wsi);
 		/* fallthru */
+		__attribute__((fallthrough));
 	case LWS_SSL_CAPABLE_MORE_SERVICE:
 	case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
 		lwsi_set_state(wsi, LRS_WAITING_SSL);
@@ -65,9 +66,11 @@ lws_ssl_client_connect2(struct lws *wsi, char *errbuf, int len)
 		case LWS_SSL_CAPABLE_MORE_SERVICE_WRITE:
 			lws_callback_on_writable(wsi);
 			/* fallthru */
+			__attribute__((fallthrough));
 		case LWS_SSL_CAPABLE_MORE_SERVICE_READ:
 			lwsi_set_state(wsi, LRS_WAITING_SSL);
 			/* fallthru */
+			__attribute__((fallthrough));
 		case LWS_SSL_CAPABLE_MORE_SERVICE:
 			return 0;
 		}

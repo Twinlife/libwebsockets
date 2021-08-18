@@ -63,6 +63,7 @@ lws_read_h1(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 		wsi->hdr_parsing_completed = 0;
 
 		/* fallthru */
+		__attribute__((fallthrough));
 
 	case LRS_HEADERS:
 		if (!wsi->http.ah) {

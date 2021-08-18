@@ -159,6 +159,7 @@ handle_first:
 				wsi->a.context->options,
 				LWS_SERVER_OPTION_VALIDATE_UTF8);
 			/* fallthru */
+			__attribute__((fallthrough));
 		case LWSWSOPC_BINARY_FRAME:
 			if (wsi->ws->opcode == LWSWSOPC_BINARY_FRAME)
 				wsi->ws->check_utf8 = 0;

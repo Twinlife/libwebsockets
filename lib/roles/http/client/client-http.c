@@ -198,6 +198,7 @@ lws_client_socket_service(struct lws *wsi, struct lws_pollfd *pollfd)
 		lws_set_timeout(wsi, NO_PENDING_TIMEOUT, 0);
 
 		/* fallthru */
+		__attribute__((fallthrough));
 
 #endif
 
@@ -224,6 +225,7 @@ start_ws_handshake:
 			return 0;
 
 		/* fallthru */
+		__attribute__((fallthrough));
 
 	case LRS_WAITING_SSL:
 
@@ -285,6 +287,7 @@ start_ws_handshake:
 #endif
 
 		/* fallthru */
+		__attribute__((fallthrough));
 
 	case LRS_H1C_ISSUE_HANDSHAKE2:
 		p = lws_generate_client_handshake(wsi, p);

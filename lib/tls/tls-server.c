@@ -179,6 +179,7 @@ lws_server_socket_service_ssl(struct lws *wsi, lws_sockfd_type accept_fd, char f
 		lwsl_debug("inserted SSL accept into fds, trying SSL_accept\n");
 
 		/* fallthru */
+		__attribute__((fallthrough));
 
 	case LRS_SSL_ACK_PENDING:
 
