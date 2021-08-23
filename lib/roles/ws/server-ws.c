@@ -372,6 +372,7 @@ lws_process_ws_upgrade2(struct lws *wsi)
 		wsi->ws->ietf_spec_revision = 13;
 		//return 1;
 		/* fallthru */
+		__attribute__((fallthrough));
 	case 13:
 #if defined(LWS_WITH_HTTP2)
 		if (wsi->h2_stream_carries_ws) {
