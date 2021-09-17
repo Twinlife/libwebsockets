@@ -136,8 +136,6 @@ lws_tls_server_conn_alpn(struct lws *wsi)
 
 	return lws_role_call_alpn_negotiated(wsi, (const char *)cstr);
 #endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
-
-	return 0;
 }
 #endif
 

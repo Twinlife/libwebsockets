@@ -154,8 +154,6 @@ __lws_sul_service_ripe(lws_dll2_owner_t *own, int own_len, lws_usec_t usnow)
 	} while (1);
 
 	/* unreachable */
-
-	return 0;
 }
 
 /*
