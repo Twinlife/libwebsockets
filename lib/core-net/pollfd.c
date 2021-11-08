@@ -61,7 +61,7 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 		 * to cancel service
 		 */
 
-		lwsl_debug("%s: using leave_pollout_active\n", __func__);
+		lwsl_wsi_debug(wsi, "using leave_pollout_active");
 
 		return 0;
 	}
@@ -138,17 +138,19 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 	lws_memory_barrier();
 #endif
 
-#if !defined(__linux__)
-	/* OSX couldn't see close on stdin pipe side otherwise */
+#if !defined(__linux__) && !defined(WIN32)
+	/* OSX couldn't see close on stdin pipe side otherwise; WSAPOLL
+	 * blows up if we give it POLLHUP
+	 */
 	_or |= LWS_POLLHUP;
 #endif
 
 	pfd = &pt->fds[wsi->position_in_fds_table];
 	pa->fd = wsi->desc.sockfd;
-	lwsl_debug("%s: wsi %p: fd %d events %d -> %d\n", __func__, wsi,
-		   pa->fd, pfd->events, (pfd->events & ~_and) | _or);
+	lwsl_wsi_debug(wsi, "fd %d events %d -> %d", pa->fd, pfd->events,
+						(pfd->events & ~_and) | _or);
 	pa->prev_events = pfd->events;
-	pa->events = pfd->events = (pfd->events & ~_and) | _or;
+	pa->events = pfd->events = (short)((pfd->events & ~_and) | _or);
 
 	if (wsi->mux_substream)
 		return 0;
@@ -190,10 +192,11 @@ _lws_change_pollfd(struct lws *wsi, int _and, int _or, struct lws_pollargs *pa)
 	 *         then cancel it to force a restart with our changed events
 	 */
 	pa_events = pa->prev_events != pa->events;
+	pfd->events = (short)pa->events;
 
 	if (pa_events) {
 		if (lws_plat_change_pollfd(context, wsi, pfd)) {
-			lwsl_info("%s failed\n", __func__);
+			lwsl_wsi_info(wsi, "failed");
 			ret = -1;
 			goto bail;
 		}
@@ -227,14 +230,15 @@ lws_accept_modulation(struct lws_context *context,
 	struct lws_pollargs pa1;
 
 	while (vh) {
-		if (vh->lserv_wsi) {
-			if (allow)
-				_lws_change_pollfd(vh->lserv_wsi,
-					   0, LWS_POLLIN, &pa1);
-			else
-				_lws_change_pollfd(vh->lserv_wsi,
-					   LWS_POLLIN, 0, &pa1);
-		}
+		lws_start_foreach_dll(struct lws_dll2 *, d,
+				      lws_dll2_get_head(&vh->listen_wsi)) {
+			struct lws *wsi = lws_container_of(d, struct lws,
+							   listen_list);
+
+			_lws_change_pollfd(wsi, allow ? 0 : LWS_POLLIN,
+						allow ? LWS_POLLIN : 0, &pa1);
+		} lws_end_foreach_dll(d);
+
 		vh = vh->vhost_next;
 	}
 }
@@ -246,13 +250,13 @@ __dump_fds(struct lws_context_per_thread *pt, const char *s)
 {
 	unsigned int n;
 
-	lwsl_warn("%s: fds_count %u, %s\n", __func__, pt->fds_count, s);
+	lwsl_cx_warn(pt->context, "fds_count %u, %s", pt->fds_count, s);
 
 	for (n = 0; n < pt->fds_count; n++) {
 		struct lws *wsi = wsi_from_fd(pt->context, pt->fds[n].fd);
 
-		lwsl_warn("  %d: fd %d, wsi %p, pos_in_fds: %d\n",
-			n + 1, pt->fds[n].fd, wsi,
+		lwsl_cx_warn(pt->context, "  %d: fd %d, wsi %s, pos_in_fds: %d",
+			n + 1, pt->fds[n].fd, lws_wsi_tag(wsi),
 			wsi ? wsi->position_in_fds_table : -1);
 	}
 }
@@ -273,19 +277,19 @@ __insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 
 	lws_pt_assert_lock_held(pt);
 
-	lwsl_debug("%s: %p: tsi=%d, sock=%d, pos-in-fds=%d\n",
-		  __func__, wsi, wsi->tsi, wsi->desc.sockfd, pt->fds_count);
+	lwsl_wsi_debug(wsi, "tsi=%d, sock=%d, pos-in-fds=%d",
+			wsi->tsi, wsi->desc.sockfd, pt->fds_count);
 
 	if ((unsigned int)pt->fds_count >= context->fd_limit_per_thread) {
-		lwsl_err("Too many fds (%d vs %d)\n", context->max_fds,
-				context->fd_limit_per_thread	);
+		lwsl_cx_err(context, "Too many fds (%d vs %d)", context->max_fds,
+				context->fd_limit_per_thread);
 		return 1;
 	}
 
 #if !defined(_WIN32)
 	if (!wsi->a.context->max_fds_unrelated_to_ulimit &&
-	    wsi->desc.sockfd - lws_plat_socket_offset() >= context->max_fds) {
-		lwsl_err("Socket fd %d is too high (%d) offset %d\n",
+	    wsi->desc.sockfd - lws_plat_socket_offset() >= (int)context->max_fds) {
+		lwsl_cx_err(context, "Socket fd %d is too high (%d) offset %d",
 			 wsi->desc.sockfd, context->max_fds,
 			 lws_plat_socket_offset());
 		return 1;
@@ -293,7 +297,12 @@ __insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 #endif
 
 	assert(wsi);
+
+#if defined(LWS_WITH_NETLINK)
+	assert(wsi->event_pipe || wsi->a.vhost || wsi == pt->context->netlink);
+#else
 	assert(wsi->event_pipe || wsi->a.vhost);
+#endif
 	assert(lws_socket_is_valid(wsi->desc.sockfd));
 
 #if defined(LWS_WITH_EXTERNAL_POLL)
@@ -307,7 +316,7 @@ __insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 	if (insert_wsi(context, wsi))
 		return -1;
 	pt->count_conns++;
-	wsi->position_in_fds_table = pt->fds_count;
+	wsi->position_in_fds_table = (int)pt->fds_count;
 
 	pt->fds[wsi->position_in_fds_table].fd = wsi->desc.sockfd;
 	pt->fds[wsi->position_in_fds_table].events = LWS_POLLIN;
@@ -343,6 +352,8 @@ __insert_wsi_socket_into_fds(struct lws_context *context, struct lws *wsi)
 	return ret;
 }
 
+/* requires pt lock */
+
 int
 __remove_wsi_socket_from_fds(struct lws *wsi)
 {
@@ -360,9 +371,10 @@ __remove_wsi_socket_from_fds(struct lws *wsi)
 
 #if !defined(_WIN32)
 	if (!wsi->a.context->max_fds_unrelated_to_ulimit &&
-	    wsi->desc.sockfd - lws_plat_socket_offset() > context->max_fds) {
-		lwsl_err("fd %d too high (%d)\n", wsi->desc.sockfd,
-			 context->max_fds);
+	    wsi->desc.sockfd - lws_plat_socket_offset() > (int)context->max_fds) {
+		lwsl_wsi_err(wsi, "fd %d too high (%d)",
+				   wsi->desc.sockfd,
+				   context->max_fds);
 
 		return 1;
 	}
@@ -383,12 +395,11 @@ __remove_wsi_socket_from_fds(struct lws *wsi)
 	assert(m == LWS_NO_FDS_POS || (m >= 0 && (unsigned int)m < pt->fds_count));
 
 	if (context->event_loop_ops->io)
-		context->event_loop_ops->io(wsi,
-				  LWS_EV_STOP | LWS_EV_READ | LWS_EV_WRITE |
-				  LWS_EV_PREPARE_DELETION);
+		context->event_loop_ops->io(wsi, LWS_EV_STOP | LWS_EV_READ |
+							       LWS_EV_WRITE);
 /*
-	lwsl_notice("%s: wsi=%p, skt=%d, fds pos=%d, end guy pos=%d, endfd=%d\n",
-		  __func__, wsi, wsi->desc.sockfd, wsi->position_in_fds_table,
+	lwsl_notice("%s: wsi=%s, skt=%d, fds pos=%d, end guy pos=%d, endfd=%d\n",
+		  __func__, lws_wsi_tag(wsi), wsi->desc.sockfd, wsi->position_in_fds_table,
 		  pt->fds_count, pt->fds[pt->fds_count - 1].fd); */
 
 	if (m != LWS_NO_FDS_POS) {
@@ -416,9 +427,10 @@ __remove_wsi_socket_from_fds(struct lws *wsi)
 			 * deletion guy's old one */
 			end_wsi = wsi_from_fd(context, v);
 			if (!end_wsi) {
-				lwsl_err("no wsi for fd %d pos %d, "
-					 "pt->fds_count=%d\n",
-					 (int)pt->fds[m].fd, m, pt->fds_count);
+				lwsl_wsi_err(wsi, "no wsi for fd %d pos %d, "
+						  "pt->fds_count=%d",
+						  (int)pt->fds[m].fd, m,
+						  pt->fds_count);
 				// assert(0);
 			} else
 				end_wsi->position_in_fds_table = m;
@@ -507,7 +519,6 @@ lws_change_pollfd(struct lws *wsi, int _and, int _or)
 int
 lws_callback_on_writable(struct lws *wsi)
 {
-	struct lws_context_per_thread *pt;
 	struct lws *w = wsi;
 
 	if (lwsi_state(wsi) == LRS_SHUTDOWN)
@@ -516,36 +527,19 @@ lws_callback_on_writable(struct lws *wsi)
 	if (wsi->socket_is_permanently_unusable)
 		return 0;
 
-	pt = &wsi->a.context->pt[(int)wsi->tsi];
-
-#if defined(LWS_WITH_DETAILED_LATENCY)
-	if (!wsi->detlat.earliest_write_req)
-		wsi->detlat.earliest_write_req = lws_now_usecs();
-#endif
-
-	lws_stats_bump(pt, LWSSTATS_C_WRITEABLE_CB_REQ, 1);
-#if defined(LWS_WITH_STATS)
-	if (!wsi->active_writable_req_us) {
-		wsi->active_writable_req_us = lws_now_usecs();
-		lws_stats_bump(pt, LWSSTATS_C_WRITEABLE_CB_EFF_REQ, 1);
-	}
-#endif
-
-	if (wsi->role_ops->callback_on_writable) {
-		int q = wsi->role_ops->callback_on_writable(wsi);
-		//lwsl_notice("%s: rops_cow says %d\n", __func__, q);
+	if (lws_rops_fidx(wsi->role_ops, LWS_ROPS_callback_on_writable)) {
+		int q = lws_rops_func_fidx(wsi->role_ops,
+					   LWS_ROPS_callback_on_writable).
+						      callback_on_writable(wsi);
 		if (q)
 			return 1;
 		w = lws_get_network_wsi(wsi);
 	} else
-
 		if (w->position_in_fds_table == LWS_NO_FDS_POS) {
-			lwsl_debug("%s: failed to find socket %d\n", __func__,
-				   wsi->desc.sockfd);
+			lwsl_wsi_debug(wsi, "failed to find socket %d",
+					    wsi->desc.sockfd);
 			return -1;
 		}
-
-	//lwsl_notice("%s: marking for POLLOUT %p (wsi %p)\n", __func__, w, wsi);
 
 	if (__lws_change_pollfd(w, 0, LWS_POLLOUT))
 		return -1;
@@ -566,15 +560,17 @@ lws_callback_on_writable(struct lws *wsi)
 void
 lws_same_vh_protocol_insert(struct lws *wsi, int n)
 {
+	lws_context_lock(wsi->a.context, __func__);
 	lws_vhost_lock(wsi->a.vhost);
 
 	lws_dll2_remove(&wsi->same_vh_protocol);
 	lws_dll2_add_head(&wsi->same_vh_protocol,
 			  &wsi->a.vhost->same_vh_protocol_owner[n]);
 
-	wsi->bound_vhost_index = n;
+	wsi->bound_vhost_index = (uint8_t)n;
 
 	lws_vhost_unlock(wsi->a.vhost);
+	lws_context_unlock(wsi->a.context);
 }
 
 void
@@ -590,11 +586,13 @@ lws_same_vh_protocol_remove(struct lws *wsi)
 	if (!wsi->a.vhost)
 		return;
 
+	lws_context_lock(wsi->a.context, __func__);
 	lws_vhost_lock(wsi->a.vhost);
 
 	__lws_same_vh_protocol_remove(wsi);
 
 	lws_vhost_unlock(wsi->a.vhost);
+	lws_context_unlock(wsi->a.context);
 }
 
 
@@ -607,9 +605,10 @@ lws_callback_on_writable_all_protocol_vhost(const struct lws_vhost *vhost,
 
 	if (protocol < vhost->protocols ||
 	    protocol >= (vhost->protocols + vhost->count_protocols)) {
-		lwsl_err("%s: protocol %p is not from vhost %p (%p - %p)\n",
-			__func__, protocol, vhost->protocols, vhost,
-			(vhost->protocols + vhost->count_protocols));
+		lwsl_vhost_err((struct lws_vhost *)vhost,
+			       "protocol %p is not from vhost %p (%p - %p)",
+			       protocol, vhost->protocols, vhost,
+				  (vhost->protocols + vhost->count_protocols));
 
 		return -1;
 	}

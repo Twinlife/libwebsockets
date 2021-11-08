@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2019 - 2020 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2019 - 2021 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -77,6 +77,25 @@ typedef struct lws_ss_plugin {
 } lws_ss_plugin_t;
 #endif
 
+/* the public, const metrics policy definition */
+
+typedef struct lws_metric_policy {
+	/* order of first two mandated by JSON policy parsing scope union */
+	const struct lws_metric_policy	*next;
+	const char			*name;
+
+	const char			*report;
+
+	/**< the metrics policy name in the policy, used to bind to it */
+	uint64_t			us_schedule;
+	/**< us interval between lws_system metrics api reports */
+
+	uint32_t			us_decay_unit;
+	/**< how many us to decay avg by half, 0 = no decay */
+	uint8_t				min_contributors;
+	/**< before we can judge something is an outlier */
+} lws_metric_policy_t;
+
 typedef struct lws_ss_x509 {
 	struct lws_ss_x509	*next;
 	const char		*vhost_name; /**< vhost name using cert ctx */
@@ -128,6 +147,24 @@ enum {
 	/**< follow redirects */
 	LWSSSPOLF_HTTP_MULTIPART_IN				= (1 << 17),
 	/**< handle inbound multipart mime at SS level */
+
+	LWSSSPOLF_ATTR_LOW_LATENCY				= (1 << 18),
+	/**< stream requires low latency */
+	LWSSSPOLF_ATTR_HIGH_THROUGHPUT				= (1 << 19),
+	/**< stream requires high throughput */
+	LWSSSPOLF_ATTR_HIGH_RELIABILITY				= (1 << 20),
+	/**< stream requires high reliability */
+	LWSSSPOLF_ATTR_LOW_COST					= (1 << 21),
+	/**< stream is not critical and should be handled as cheap as poss */
+	LWSSSPOLF_PERF						= (1 << 22),
+	/**< capture and report performace information */
+	LWSSSPOLF_DIRECT_PROTO_STR				= (1 << 23),
+	/**< metadata as direct protocol string, e.g. http header */
+	LWSSSPOLF_HTTP_CACHE_COOKIES				= (1 << 24),
+	/**< Record http cookies and pass them back on future requests */
+	LWSSSPOLF_PRIORITIZE_READS				= (1 << 25),
+	/**< prioritize clearing reads at expense of writes */
+
 };
 
 typedef struct lws_ss_trust_store {
@@ -154,15 +191,47 @@ enum {
 	_LWSSS_HBI_COUNT /* always last */
 };
 
+/*
+ * This does for both the static policy metadata entry, and the runtime metadata
+ * handling object.
+ */
+
 typedef struct lws_ss_metadata {
 	struct lws_ss_metadata	*next;
 	const char		*name;
-	void			*value;
+	void			*value__may_own_heap;
 	size_t			length;
 
-	uint8_t			value_on_lws_heap; /* proxy does this */
+	uint8_t			value_length; /* only valid if set by policy */
+	uint8_t			value_is_http_token; /* valid if set by policy */
+#if defined(LWS_WITH_SS_DIRECT_PROTOCOL_STR)
+	uint8_t			name_on_lws_heap:1;  /* proxy metatadata does this */
+#endif
+	uint8_t			value_on_lws_heap:1; /* proxy + rx metadata does this */
+#if defined(LWS_WITH_SECURE_STREAMS_PROXY_API)
+	uint8_t			pending_onward:1;
+#endif
 } lws_ss_metadata_t;
 
+typedef struct lws_ss_http_respmap {
+	uint16_t		resp;	/* the http response code */
+	uint16_t		state;	/* low 16-bits of associated state */
+} lws_ss_http_respmap_t;
+
+/*
+ * This is a mapping between an auth streamtype and a name and other information
+ * that can be independently instantiated.  Other streamtypes can indicate they
+ * require this authentication on their connection.
+ */
+
+typedef struct lws_ss_auth {
+	struct lws_ss_auth	*next;
+	const char		*name;
+
+	const char		*type;
+	const char		*streamtype;
+	uint8_t			blob_index;
+} lws_ss_auth_t;
 
 /**
  * lws_ss_policy_t: policy database entry for a stream type
@@ -188,6 +257,8 @@ typedef struct lws_ss_policy {
 	const char		*payload_fmt;
 	const char		*socks5_proxy;
 	lws_ss_metadata_t	*metadata; /* linked-list of metadata */
+	const lws_metric_policy_t *metrics; /* linked-list of metric policies */
+	const lws_ss_auth_t	*auth; /* NULL or auth object we bind to */
 
 	/* protocol-specific connection policy details */
 
@@ -211,6 +282,8 @@ typedef struct lws_ss_policy {
 			const char	*blob_header[_LWSSS_HBI_COUNT];
 			const char	*auth_preamble;
 
+			const lws_ss_http_respmap_t *respmap;
+
 			union {
 //				struct { /* LWSSSP_H1 */
 //				} h1;
@@ -224,6 +297,7 @@ typedef struct lws_ss_policy {
 			} u;
 
 			uint16_t	resp_expect;
+			uint8_t		count_respmap;
 			uint8_t		fail_redirect:1;
 		} http;
 
@@ -238,11 +312,17 @@ typedef struct lws_ss_policy {
 			const char	*will_topic;
 			const char	*will_message;
 
+			const char	*birth_topic;
+			const char	*birth_message;
+
 			uint16_t	keep_alive;
 			uint8_t		qos;
 			uint8_t		clean_start;
 			uint8_t		will_qos;
 			uint8_t		will_retain;
+			uint8_t		birth_qos;
+			uint8_t		birth_retain;
+			uint8_t		aws_iot;
 
 		} mqtt;
 
@@ -257,6 +337,11 @@ typedef struct lws_ss_policy {
 	const void		*plugins_info[2];   /**< plugin-specific data */
 #endif
 
+#if defined(LWS_WITH_SECURE_STREAMS_AUTH_SIGV4)
+	/* directly point to the metadata name, no need to expand */
+	const char *aws_region;
+	const char *aws_service;
+#endif
 	/*
 	 * We're either a client connection policy that wants a trust store,
 	 * or we're a server policy that wants a mem cert and key... Hold
@@ -277,6 +362,15 @@ typedef struct lws_ss_policy {
 
 	const lws_retry_bo_t	*retry_bo;   /**< retry policy to use */
 
+	uint32_t		proxy_buflen; /**< max dsh alloc for proxy */
+	uint32_t		proxy_buflen_rxflow_on_above;
+	uint32_t		proxy_buflen_rxflow_off_below;
+
+	uint32_t		client_buflen; /**< max dsh alloc for client */
+	uint32_t		client_buflen_rxflow_on_above;
+	uint32_t		client_buflen_rxflow_off_below;
+
+
 	uint32_t		timeout_ms;  /**< default message response
 					      * timeout in ms */
 	uint32_t		flags;	     /**< stream attribute flags */
@@ -287,6 +381,8 @@ typedef struct lws_ss_policy {
 	uint8_t			protocol;    /**< protocol index */
 	uint8_t			client_cert; /**< which client cert to apply
 						  0 = none, 1+ = cc 0+ */
+	uint8_t			priority;	/* 0 = normal, 6 = max normal,
+						 * 7 = network management */
 } lws_ss_policy_t;
 
 #if !defined(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY)
@@ -308,10 +404,14 @@ LWS_VISIBLE LWS_EXTERN int
 lws_ss_policy_overlay(struct lws_context *context, const char *overlay);
 
 /*
- * You almost certainly don't want this, it returns the first policy object
- * in a linked-list of objects created by lws_ss_policy_parse above
+ * You almost certainly don't want these, they return the first policy or auth
+ * object in a linked-list of objects created by lws_ss_policy_parse above,
+ * they are exported to generate static policy with
  */
 LWS_VISIBLE LWS_EXTERN const lws_ss_policy_t *
 lws_ss_policy_get(struct lws_context *context);
+
+LWS_VISIBLE LWS_EXTERN const lws_ss_auth_t *
+lws_ss_auth_get(struct lws_context *context);
 
 #endif

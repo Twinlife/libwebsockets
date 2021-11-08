@@ -98,14 +98,14 @@ thread_spam(void *d)
 			goto wait_unlock;
 		}
 
-		amsg.payload = malloc(LWS_PRE + len);
+		amsg.payload = malloc((unsigned int)(LWS_PRE + len));
 		if (!amsg.payload) {
 			lwsl_user("OOM: dropping\n");
 			goto wait_unlock;
 		}
-		n = lws_snprintf((char *)amsg.payload + LWS_PRE, len,
+		n = lws_snprintf((char *)amsg.payload + LWS_PRE, (unsigned int)len,
 			         "tid: %d, msg: %d", whoami, index++);
-		amsg.len = n;
+		amsg.len = (unsigned int)n;
 		n = (int)lws_ring_insert(vhd->ring, &amsg, 1);
 		if (n != 1) {
 			__minimal_destroy_message(&amsg);
@@ -284,10 +284,9 @@ static const struct lws_protocols protocols[] = {
 	{
 		"lws-minimal-broker",
 		callback_minimal_broker,
-		0,
-		0,
+		0, 0, 0, NULL, 0
 	},
-	{ NULL, NULL, 0, 0 }
+	LWS_PROTOCOL_LIST_TERM
 };
 
 static void

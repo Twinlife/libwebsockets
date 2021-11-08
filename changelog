@@ -1,6 +1,107 @@
 Changelog
 ---------
 
+v4.3.0
+======
+
+ - Add full CBOR stream parsing and writing support, with huge
+   amount of test vectors and resumable printf type write apis
+   See ./READMEs/README.cbor-lecp.md
+ - Add COSE key and signing / validation support with huge amount of
+   test vectors
+    cose_sign[1] ES256/384/512, RS256/384/512
+    cose_mac0    HS256/384/512
+   See ./READMEs/README.cbor-cose.md
+ - JIT Trust: for constrained devices, provides a way to determine the
+   trusted CA certs the peer requires, and instantiate just those.
+   This allows generic client browsing without the overhead of ~130
+   x.509 CA certs in memory permanently.
+   See ./READMEs/README.jit-trust.md
+ - Add support for client Netscape cookie jar with caching
+ - Secure Streams: issue LWSSSCS_EVENT_WAIT_CANCELLED state() when
+   lws_cancel_service() called, so cross-thread events can be handled
+   in SS
+ - Actively assert() on attempt to destroy SS handles still active in
+   the call stack, use DESTROY_ME returns instead so caller can choose
+   how to handle it.
+ - Improved Client Connection Error report strings for tls errors
+ - SMP: Use a private fakewsi for PROTOCOL_INIT so pts cannot try to
+   use the same one concurrently
+ - MbedTLS v3 support for all release changes, as well as retaining
+   support for v2.x
+ - MQTT client: support QoS2
+ - Event lib ops can now be set at context creation time directly,
+   bringing full event lib hooking to custom event loops.  See
+   minimal-http-server-eventlib-custom
+ - Extra APIs to recover AKID and SKID from x.509 in mbedtls and openssl
+ - Improve http redirect to handle h2-> h2 cleanly
+ - IPv4+6 listen sockets on vhosts are now done with two separate
+   sockets bound individually to AF_INET and AF_INET6 addresses,
+   handled by the same vhost listen flow.
+ - Improved tls restriction handling
+ - Log contexts: allow objects to log into local logging contexts, by
+   lws_context, vhost, wsi and ss handle.  Each context has its own
+   emit function and log level. See ./READMEs/README.logging.md
+ - Upgrade compiler checking to default to -Werror -Wall -Wextra
+ - Fault injection apis now also support pseudo-random number binding
+   within a specified range, eg,
+   --fault-injection "f1(10%),f1_delay(123..456)"
+ - Remove LWS_WITH_DEPRECATED_THINGS, remove master branch
+ - Interface binding now uses ipv6 scoring to select bind address
+
+v4.2.0
+======
+
+ - Sai coverage upgrades, 495 builds on 27 platforms, including OSX M1,
+   Xenial, Bionic and Focal Ubuntu, Debian Sid and Buster on both 32 and
+   64-bit OS, and NetBSD, Solaris, FreeBSD, Windows, ESP32.
+   Ctest run on more scenarios including all LWS_WITH_DISTRO_RECOMMENDED.
+   More tests use valgrind if available on platform.
+ - RFC7231 date and time parsing and retry-after wired up to lws_retry
+ - `LWS_WITH_SUL_DEBUGGING` checks that no sul belonging to Secure Streams
+   and wsi objects are left registered on destruction
+ - Netlink monitoring on Linux dynamically tracks interface address and
+   routing changes, and immediately closes connections on invalidated
+   routes.
+ - RFC6724 DNS results sorting over ipv4 + ipv6 results, according to
+   available dynamic route information
+ - Support new event library, sdevent (systemd native loop), via
+   `LWS_WITH_SDEVENT`
+ - Reduce .rodata cost of role structs by making them sparse
+ - Additional Secure Streams QA tests and runtime state transition
+   validation
+ - SMD-over-ss-proxy documentation and helpers to simplify forwarding
+ - SSPC stream buffering at proxy and client set from policy by streamtype
+ - Trigger Captive Portal Detection if DNS resolution fails
+ - Switch all logs related to wsi and Secure Streams to use unique,
+   descriptive tags instead of pointers (which may be reallocated)
+ - Use NOITCE logging for Secure Streams and wsi lifecycle logging using
+   tags
+ - Update SSPC serialization to include versioning on initial handshake,
+   and pass client pid to proxy so related objects are tagged with it
+ - Enable errors on -Wconversion pedantic type-related build issues
+   throughout the lws sources and upgrade every affected cast.
+ - Windows remove WSA event implementation and replace with WSAPoll, with
+   a pair of UDP sockets instead of pipe() for `lws_cancel_service()`
+ - `lws_strcmp_wildcard()` helper that understand "x*", "x*y", "x*y*" etc
+ - `LWS_WITH_PLUGINS_BUILTIN` cmake option just builds plugins into the main
+ library image directly
+ - Secure Streams proxy supports policy for flow control between proxy and
+ clients
+ - libressl also supported along with boringssl, wolfssl
+ - prepared for openssl v3 compatibility, for main function and GENCRYPTO
+ - Fault injection apis can confirm operation of 48 error paths and counting
+ - `LWS_WITH_SYS_METRICS` keeps stats and reports them to user-defined
+ function, compatible with openmetrics
+ - windows platform knows how to prepare openssl with system trust store certs
+ - `LWS_WITH_SYS_CONMON` allows selected client connections to make precise
+ measurements of connection performance and DNS results, and report them in a struct
+ - New native support for uloop event loop (OpenWRT loop)
+ - More options around JWT
+ - Support TLS session caching and reuse by default, on both OpenSSL and
+ mbedtls
+ - Many fixes and improvements...
+
 v4.1.0
 ======
 

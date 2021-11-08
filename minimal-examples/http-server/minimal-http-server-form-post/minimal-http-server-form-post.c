@@ -106,9 +106,6 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 					    lws_spa_get_string(pss->spa, n));
 			}
 
-		if (pss->spa && lws_spa_destroy(pss->spa))
-			return -1;
-
 		/*
 		 * Our response is to redirect to a static page.  We could
 		 * have generated a dynamic html page here instead.
@@ -137,8 +134,8 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 }
 
 static struct lws_protocols protocols[] = {
-	{ "http", callback_http, sizeof(struct pss), 0 },
-	{ NULL, NULL, 0, 0 } /* terminator */
+	{ "http", callback_http, sizeof(struct pss), 0, 0, NULL, 0 },
+	LWS_PROTOCOL_LIST_TERM
 };
 
 /* default mount serves the URL space from ./mount-origin */

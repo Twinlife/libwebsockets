@@ -33,7 +33,21 @@ include_directories(.)
 
 list(APPEND SOURCES
 	misc/base64-decode.c
+	misc/prng.c
 	misc/lws-ring.c)
+
+if (LWS_WITH_NETWORK)
+	list(APPEND SOURCES
+		misc/cache-ttl/lws-cache-ttl.c
+		misc/cache-ttl/heap.c
+		)
+
+	if (LWS_WITH_CACHE_NSCOOKIEJAR)
+		list(APPEND SOURCES
+			misc/cache-ttl/file.c)
+	endif()
+
+endif()
 
 if (LWS_WITH_FTS)
 	list(APPEND SOURCES
@@ -41,6 +55,8 @@ if (LWS_WITH_FTS)
 		misc/fts/trie-fd.c)
 endif()
 
+# this is an older, standalone hashed disk cache
+# implementation unrelated to lws-cache-ttl
 if (LWS_WITH_DISKCACHE)
 	list(APPEND SOURCES
 		misc/diskcache.c)
@@ -80,6 +96,9 @@ if (LWS_WITH_LWSAC)
 		list(APPEND SOURCES
 			misc/lwsac/cached-file.c)
 	endif()
+	if (LWS_WITH_SECURE_STREAMS_CPP)
+		list(APPEND SOURCES misc/lwsac/lwsac.cxx)
+	endif()
 endif()
 
 if (NOT LWS_WITHOUT_BUILTIN_SHA1)
@@ -91,6 +110,12 @@ if (LWS_WITH_LEJP)
 	list(APPEND SOURCES
 		misc/lejp.c)
 endif()
+if (LWS_WITH_CBOR)
+	list(APPEND SOURCES
+		misc/lecp.c
+		misc/ieeehalfprecision.c)
+endif()
+
 
 if (UNIX)
 	if (NOT LWS_HAVE_GETIFADDRS)

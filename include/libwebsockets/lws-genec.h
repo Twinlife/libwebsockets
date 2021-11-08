@@ -72,7 +72,7 @@ struct lws_ec_curves {
  * \param context: your lws_context (for RNG access)
  * \param curve_table: NULL, enabling P-256, P-384 and P-521, or a replacement
  *		       struct lws_ec_curves array, terminated by an entry with
- *		       .name = NULL, of curves you want to whitelist
+ *		       .name = NULL, of curves you want to allow
  *
  * Initializes a genecdh
  */
@@ -118,7 +118,7 @@ lws_genecdh_compute_shared_secret(struct lws_genec_ctx *ctx, uint8_t *ss,
  * \param context: your lws_context (for RNG access)
  * \param curve_table: NULL, enabling P-256, P-384 and P-521, or a replacement
  *		       struct lws_ec_curves array, terminated by an entry with
- *		       .name = NULL, of curves you want to whitelist
+ *		       .name = NULL, of curves you want to allow
  *
  * Initializes a genecdh
  */
@@ -147,7 +147,7 @@ lws_genecdsa_new_keypair(struct lws_genec_ctx *ctx, const char *curve_name,
  */
 LWS_VISIBLE LWS_EXTERN int
 lws_genecdsa_set_key(struct lws_genec_ctx *ctx,
-		     struct lws_gencrypto_keyelem *el);
+		     const struct lws_gencrypto_keyelem *el);
 
 /** lws_genecdsa_hash_sig_verify_jws() - Verifies a JWS ECDSA signature on a given hash
  *

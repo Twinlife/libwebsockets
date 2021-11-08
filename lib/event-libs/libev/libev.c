@@ -134,18 +134,38 @@ lws_ev_sigint_cb(struct ev_loop *loop, struct ev_signal *watcher, int revents)
 }
 
 static int
+elops_listen_init_ev(struct lws_dll2 *d, void *user)
+{
+	struct lws *wsi = lws_container_of(d, struct lws, listen_list);
+	struct lws_context *context = (struct lws_context *)user;
+	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
+	struct lws_pt_eventlibs_libev *ptpr = pt_to_priv_ev(pt);
+	struct lws_wsi_eventlibs_libev *w = wsi_to_priv_ev(wsi);
+	struct lws_vhost *vh = wsi->a.vhost;
+
+	w->w_read.context = context;
+	w->w_write.context = context;
+	vh_to_priv_ev(vh)->w_accept.context = context;
+
+	ev_io_init(&vh_to_priv_ev(vh)->w_accept.watcher,
+		   lws_accept_cb, wsi->desc.sockfd, EV_READ);
+	ev_io_start(ptpr->io_loop, &vh_to_priv_ev(vh)->w_accept.watcher);
+
+	return 0;
+}
+
+static int
 elops_init_pt_ev(struct lws_context *context, void *_loop, int tsi)
 {
 	struct lws_context_per_thread *pt = &context->pt[tsi];
 	struct lws_pt_eventlibs_libev *ptpr = pt_to_priv_ev(pt);
 	struct ev_signal *w_sigint = &ptpr->w_sigint.watcher;
 	struct ev_loop *loop = (struct ev_loop *)_loop;
-	struct lws_vhost *vh = context->vhost_list;
 	const char *backend_name;
+	unsigned int backend;
 	int status = 0;
-	int backend;
 
-	lwsl_info("%s: loop %p\n", __func__, _loop);
+	lwsl_cx_info(context, "loop %p", _loop);
 
 	ptpr->pt = pt;
 
@@ -155,33 +175,14 @@ elops_init_pt_ev(struct lws_context *context, void *_loop, int tsi)
 		context->pt[tsi].event_loop_foreign = 1;
 
 	if (!loop) {
-		lwsl_err("%s: creating event base failed\n", __func__);
+		lwsl_cx_err(context, "creating event base failed");
 
 		return -1;
 	}
 
 	ptpr->io_loop = loop;
 
-	/*
-	 * Initialize the accept w_accept with all the listening sockets
-	 * and register a callback for read operations
-	 */
-	while (vh) {
-		if (vh->lserv_wsi) {
-			struct lws_wsi_eventlibs_libev *w =
-						wsi_to_priv_ev(vh->lserv_wsi);
-
-			w->w_read.context = context;
-			w->w_write.context = context;
-			vh_to_priv_ev(vh)->w_accept.context = context;
-
-			ev_io_init(&vh_to_priv_ev(vh)->w_accept.watcher,
-				   lws_accept_cb,
-				   vh->lserv_wsi->desc.sockfd, EV_READ);
-			ev_io_start(loop, &vh_to_priv_ev(vh)->w_accept.watcher);
-		}
-		vh = vh->vhost_next;
-	}
+	lws_vhost_foreach_listen_wsi(context, context, elops_listen_init_ev);
 
 	/* Register the signal watcher unless it's a foreign loop */
 	if (!context->pt[tsi].event_loop_foreign) {
@@ -225,7 +226,7 @@ elops_init_pt_ev(struct lws_context *context, void *_loop, int tsi)
 		break;
 	}
 
-	lwsl_info(" libev backend: %s\n", backend_name);
+	lwsl_cx_info(context, " libev backend: %s", backend_name);
 	(void)backend_name;
 
 	ev_timer_init(&ptpr->hrtimer, lws_ev_hrtimer_cb, 0, 0);
@@ -236,19 +237,27 @@ elops_init_pt_ev(struct lws_context *context, void *_loop, int tsi)
 	return status;
 }
 
+static int
+elops_listen_destroy_ev(struct lws_dll2 *d, void *user)
+{
+	struct lws *wsi = lws_container_of(d, struct lws, listen_list);
+	struct lws_context *context = (struct lws_context *)user;
+	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
+	struct lws_pt_eventlibs_libev *ptpr = pt_to_priv_ev(pt);
+	struct lws_vhost *vh = wsi->a.vhost;
+
+	ev_io_stop(ptpr->io_loop, &vh_to_priv_ev(vh)->w_accept.watcher);
+
+	return 0;
+}
+
 static void
 elops_destroy_pt_ev(struct lws_context *context, int tsi)
 {
 	struct lws_context_per_thread *pt = &context->pt[tsi];
 	struct lws_pt_eventlibs_libev *ptpr = pt_to_priv_ev(pt);
-	struct lws_vhost *vh = context->vhost_list;
 
-	while (vh) {
-		if (vh->lserv_wsi)
-			ev_io_stop(ptpr->io_loop,
-				   &vh_to_priv_ev(vh)->w_accept.watcher);
-		vh = vh->vhost_next;
-	}
+	lws_vhost_foreach_listen_wsi(context, context, elops_listen_destroy_ev);
 
 	/* static assets */
 
@@ -279,8 +288,6 @@ elops_accept_ev(struct lws *wsi)
 	struct lws_wsi_eventlibs_libev *w = wsi_to_priv_ev(wsi);
 	int fd;
 
-	lwsl_notice("%s\n", __func__);
-
 	if (wsi->role_ops->file_handle)
 		fd = wsi->desc.filefd;
 	else
@@ -296,15 +303,15 @@ elops_accept_ev(struct lws *wsi)
 }
 
 static void
-elops_io_ev(struct lws *wsi, int flags)
+elops_io_ev(struct lws *wsi, unsigned int flags)
 {
 	struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
 	struct lws_pt_eventlibs_libev *ptpr = pt_to_priv_ev(pt);
 	struct lws_wsi_eventlibs_libev *w = wsi_to_priv_ev(wsi);
 
-	lwsl_notice("%s: wsi %p %s flags 0x%x %p %d\n", __func__,
-				wsi, wsi->role_ops->name, flags,
-				ptpr->io_loop, pt->is_destroyed);
+	lwsl_wsi_debug(wsi, "%s flags 0x%x %p %d", wsi->role_ops->name, flags,
+						   ptpr->io_loop,
+						   pt->is_destroyed);
 
 	if (!ptpr->io_loop || pt->is_destroyed)
 		return;
@@ -342,8 +349,6 @@ elops_destroy_context2_ev(struct lws_context *context)
 	struct lws_pt_eventlibs_libev *ptpr;
 	int n, m;
 
-	lwsl_debug("%s\n", __func__);
-
 	for (n = 0; n < context->count_threads; n++) {
 		int budget = 1000;
 
@@ -355,7 +360,7 @@ elops_destroy_context2_ev(struct lws_context *context)
 		if (pt->event_loop_foreign || !ptpr->io_loop)
 			continue;
 
-		if (!context->finalize_destroy_after_internal_loops_stopped) {
+		if (!context->evlib_finalize_destroy_after_int_loops_stop) {
 			ev_break(ptpr->io_loop, EVBREAK_ONE);
 			continue;
 		}
@@ -423,6 +428,7 @@ static const struct lws_event_loop_ops event_loop_ops_ev = {
 	/* run_pt */			elops_run_pt_ev,
 	/* destroy_pt */		elops_destroy_pt_ev,
 	/* destroy wsi */		elops_destroy_wsi_ev,
+	/* foreign_thread */		NULL,
 
 	/* flags */			0,
 
@@ -439,6 +445,7 @@ const lws_plugin_evlib_t evlib_ev = {
 	.hdr = {
 		"libev event loop",
 		"lws_evlib_plugin",
+		LWS_BUILD_HASH,
 		LWS_PLUGIN_API_MAGIC
 	},
 

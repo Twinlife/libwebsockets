@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010 - 2019 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2021 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -29,6 +29,10 @@
 #include <sys/wait.h>
 #include <sys/times.h>
 #endif
+#endif
+
+#if defined(__OpenBSD__)
+#include <sys/siginfo.h>
 #endif
 
 /** \defgroup misc Miscellaneous APIs
@@ -110,6 +114,47 @@ lws_buflist_linear_copy(struct lws_buflist **head, size_t ofs, uint8_t *buf,
 			size_t len);
 
 /**
+ * lws_buflist_linear_use(): copy and consume from buflist head
+ *
+ * \param head: list head
+ * \param buf: buffer to copy linearly into
+ * \param len: length of buffer available
+ *
+ * Copies a possibly fragmented buflist from the head into the linear output
+ * buffer \p buf for up to length \p len, and consumes the buflist content that
+ * was copied out.
+ *
+ * Since it was consumed, calling again will resume copying out and consuming
+ * from as far as it got the first time.
+ *
+ * Returns the number of bytes written into \p buf.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_buflist_linear_use(struct lws_buflist **head, uint8_t *buf, size_t len);
+
+/**
+ * lws_buflist_fragment_use(): copy and consume <= 1 frag from buflist head
+ *
+ * \param head: list head
+ * \param buf: buffer to copy linearly into
+ * \param len: length of buffer available
+ * \param frag_first: pointer to char written on exit to if this is start of frag
+ * \param frag_fin: pointer to char written on exit to if this is end of frag
+ *
+ * Copies all or part of the fragment at the start of a buflist from the head
+ * into the output buffer \p buf for up to length \p len, and consumes the
+ * buflist content that was copied out.
+ *
+ * Since it was consumed, calling again will resume copying out and consuming
+ * from as far as it got the first time.
+ *
+ * Returns the number of bytes written into \p buf.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_buflist_fragment_use(struct lws_buflist **head, uint8_t *buf,
+			 size_t len, char *frag_first, char *frag_fin);
+
+/**
  * lws_buflist_destroy_all_segments(): free all segments on the list
  *
  * \param head: list head
@@ -144,6 +189,9 @@ lws_buflist_describe(struct lws_buflist **head, void *id, const char *reason);
  */
 #define lws_ptr_diff(head, tail) \
 			((int)((char *)(head) - (char *)(tail)))
+
+#define lws_ptr_diff_size_t(head, tail) \
+			((size_t)(ssize_t)((char *)(head) - (char *)(tail)))
 
 /**
  * lws_snprintf(): snprintf that truncates the returned length too
@@ -261,6 +309,19 @@ lws_json_simple_strcmp(const char *buf, size_t len, const char *name, const char
 LWS_VISIBLE LWS_EXTERN int
 lws_hex_to_byte_array(const char *h, uint8_t *dest, int max);
 
+/**
+ * lws_hex_from_byte_array(): render byte array as hex char string
+ *
+ * \param src: incoming binary source array
+ * \param slen: length of src in bytes
+ * \param dest: array to fill with hex chars representing src
+ * \param len: max extent of dest
+ *
+ * This converts binary data of length slen at src, into a hex string at dest
+ * of maximum length len.  Even if truncated, the result will be NUL-terminated.
+ */
+LWS_VISIBLE LWS_EXTERN void
+lws_hex_from_byte_array(const uint8_t *src, size_t slen, char *dest, size_t len);
 
 /**
  * lws_hex_random(): generate len - 1 or - 2 characters of random ascii hex
@@ -270,10 +331,7 @@ lws_hex_to_byte_array(const char *h, uint8_t *dest, int max);
  * \param len: the number of bytes the buffer dest points to can hold
  *
  * This creates random ascii-hex strings up to a given length, with a
- * terminating NUL.  Hex characters are produced in pairs, if the length of
- * the destination buffer is even, after accounting for the NUL there will be
- * an unused byte at the end after the NUL.  So lengths should be odd to get
- * length - 1 characters exactly followed by the NUL.
+ * terminating NUL.
  *
  * There will not be any characters produced that are not 0-9, a-f, so it's
  * safe to go straight into, eg, JSON.
@@ -498,7 +556,7 @@ lws_get_child(const struct lws *wsi);
  * and subdir creation / permissions down /var/cache dynamically.
  */
 LWS_VISIBLE LWS_EXTERN void
-lws_get_effective_uid_gid(struct lws_context *context, int *uid, int *gid);
+lws_get_effective_uid_gid(struct lws_context *context, uid_t *uid, gid_t *gid);
 
 /**
  * lws_get_udp() - get wsi's udp struct
@@ -760,6 +818,25 @@ LWS_VISIBLE LWS_EXTERN int
 lws_is_cgi(struct lws *wsi);
 
 /**
+ * lws_tls_jit_trust_blob_queury_skid() - walk jit trust blob for skid
+ *
+ * \param _blob: the start of the blob in memory
+ * \param blen: the length of the blob in memory
+ * \param skid: the SKID we are looking for
+ * \param skid_len: the length of the SKID we are looking for
+ * \param prpder: result pointer to receive a pointer to the matching DER
+ * \param prder_len: result pointer to receive matching DER length
+ *
+ * Helper to scan a JIT Trust blob in memory for a trusted CA cert matching
+ * a given SKID.  Returns 0 if found and *prpder and *prder_len are set, else
+ * nonzero.
+ */
+LWS_VISIBLE LWS_EXTERN int
+lws_tls_jit_trust_blob_queury_skid(const void *_blob, size_t blen,
+				   const uint8_t *skid, size_t skid_len,
+				   const uint8_t **prpder, size_t *prder_len);
+
+/**
  * lws_open() - platform-specific wrapper for open that prepares the fd
  *
  * \param __file: the filepath to open
@@ -827,7 +904,7 @@ LWS_VISIBLE extern const lws_humanize_unit_t humanize_schema_us[8];
  */
 
 LWS_VISIBLE LWS_EXTERN int
-lws_humanize(char *buf, int len, uint64_t value,
+lws_humanize(char *buf, size_t len, uint64_t value,
 	     const lws_humanize_unit_t *schema);
 
 LWS_VISIBLE LWS_EXTERN void
@@ -895,7 +972,7 @@ struct lws_spawn_piped_info {
 	struct lws			*opt_parent;
 
 	const char * const		*exec_array;
-	char				**env_array;
+	const char			**env_array;
 	const char			*protocol_name;
 	const char			*chroot_path;
 	const char			*wd;

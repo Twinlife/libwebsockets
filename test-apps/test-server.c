@@ -107,10 +107,17 @@ lws_callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 				return -1;
 		}
 		pfd->fd = pa->fd;
+<<<<<<< HEAD
 		pfd->events = pa->events;
 		pfd->revents = 0;
 		/* high water mark... */
 		count_pollfds = (pfd - pollfds) + 1;
+=======
+		pfd->events = (short)pa->events;
+		pfd->revents = 0;
+		/* high water mark... */
+		count_pollfds = (int)((pfd - pollfds) + 1);
+>>>>>>> github/v4.3-stable
 		break;
 	case LWS_CALLBACK_DEL_POLL_FD:
 		pa = (struct lws_pollargs *)in;
@@ -128,7 +135,11 @@ lws_callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 			lwsl_err("%s: unknown fd %d\n", __func__, pa->fd);
 			return -1;
 		}
+<<<<<<< HEAD
 		pfd->events = pa->events;
+=======
+		pfd->events = (short)pa->events;
+>>>>>>> github/v4.3-stable
 		break;
 #endif
 	case LWS_CALLBACK_HTTP:
@@ -138,19 +149,19 @@ lws_callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 		/* dump the headers */
 
 		do {
-			c = lws_token_to_string(n);
+			c = lws_token_to_string((enum lws_token_indexes)n);
 			if (!c) {
 				n++;
 				continue;
 			}
 
-			hlen = lws_hdr_total_length(wsi, n);
+			hlen = lws_hdr_total_length(wsi, (enum lws_token_indexes)n);
 			if (!hlen || hlen > (int)sizeof(buf) - 1) {
 				n++;
 				continue;
 			}
 
-			if (lws_hdr_copy(wsi, buf, sizeof buf, n) < 0)
+			if (lws_hdr_copy(wsi, buf, sizeof buf, (enum lws_token_indexes)n) < 0)
 				fprintf(stderr, "    %s (too big)\n", (char *)c);
 			else {
 				buf[sizeof(buf) - 1] = '\0';
@@ -187,14 +198,14 @@ lws_callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 static struct lws_protocols protocols[] = {
 	/* first protocol must always be HTTP handler */
 
-	{ "http-only", lws_callback_http, 0, 0, },
+	{ "http-only", lws_callback_http, 0, 0, 0, NULL, 0 },
 #if defined(LWS_ROLE_WS)
 	LWS_PLUGIN_PROTOCOL_DUMB_INCREMENT,
 	LWS_PLUGIN_PROTOCOL_MIRROR,
 	LWS_PLUGIN_PROTOCOL_LWS_STATUS,
 #endif
 	LWS_PLUGIN_PROTOCOL_POST_DEMO,
-	{ NULL, NULL, 0, 0 } /* terminator */
+	LWS_PROTOCOL_LIST_TERM
 };
 
 
@@ -255,11 +266,31 @@ static const struct lws_extension exts[] = {
 #endif
 
 /*
- * mount handlers for sections of the URL space
+ * mount a filesystem directory into the URL space at /
+ * point it to our /usr/share directory with our assets in
+ * stuff from here is autoserved by the library
  */
 
-static const struct lws_http_mount mount_ziptest = {
+static const struct lws_http_mount mount_ziptest_uncomm = {
 	NULL,			/* linked-list pointer to next*/
+	"/uncommziptest",		/* mountpoint in URL namespace on this vhost */
+	LOCAL_RESOURCE_PATH"/candide-uncompressed.zip",	/* handler */
+	NULL,	/* default filename if none given */
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	0,
+	0,
+	0,
+	0,
+	0,
+	0,
+	LWSMPRO_FILE,	/* origin points to a callback */
+	14,			/* strlen("/ziptest"), ie length of the mountpoint */
+	NULL,
+}, mount_ziptest = {
+	(struct lws_http_mount *)&mount_ziptest_uncomm,			/* linked-list pointer to next*/
 	"/ziptest",		/* mountpoint in URL namespace on this vhost */
 	LOCAL_RESOURCE_PATH"/candide.zip",	/* handler */
 	NULL,	/* default filename if none given */
@@ -276,11 +307,7 @@ static const struct lws_http_mount mount_ziptest = {
 	LWSMPRO_FILE,	/* origin points to a callback */
 	8,			/* strlen("/ziptest"), ie length of the mountpoint */
 	NULL,
-
-	{ NULL, NULL } // sentinel
-};
-
-static const struct lws_http_mount mount_post = {
+}, mount_post = {
 	(struct lws_http_mount *)&mount_ziptest, /* linked-list pointer to next*/
 	"/formtest",		/* mountpoint in URL namespace on this vhost */
 	"protocol-post-demo",	/* handler */
@@ -298,37 +325,26 @@ static const struct lws_http_mount mount_post = {
 	LWSMPRO_CALLBACK,	/* origin points to a callback */
 	9,			/* strlen("/formtest"), ie length of the mountpoint */
 	NULL,
-
-	{ NULL, NULL } // sentinel
+}, mount = {
+	/* .mount_next */		&mount_post,	/* linked-list "next" */
+	/* .mountpoint */		"/",		/* mountpoint URL */
+	/* .origin */			LOCAL_RESOURCE_PATH, /* serve from dir */
+	/* .def */			"test.html",	/* default filename */
+	/* .protocol */			NULL,
+	/* .cgienv */			NULL,
+	/* .extra_mimetypes */		NULL,
+	/* .interpret */		NULL,
+	/* .cgi_timeout */		0,
+	/* .cache_max_age */		0,
+	/* .auth_mask */		0,
+	/* .cache_reusable */		0,
+	/* .cache_revalidate */		0,
+	/* .cache_intermediaries */	0,
+	/* .origin_protocol */		LWSMPRO_FILE,	/* files in a dir */
+	/* .mountpoint_len */		1,		/* char count */
+	/* .basic_auth_login_file */	NULL,
 };
 
-/*
- * mount a filesystem directory into the URL space at /
- * point it to our /usr/share directory with our assets in
- * stuff from here is autoserved by the library
- */
-
-static const struct lws_http_mount mount = {
-	(struct lws_http_mount *)&mount_post,	/* linked-list pointer to next*/
-	"/",		/* mountpoint in URL namespace on this vhost */
-	LOCAL_RESOURCE_PATH, /* where to go on the filesystem for that */
-	"test.html",	/* default filename if none given */
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	LWSMPRO_FILE,	/* mount type is a directory in a filesystem */
-	1,		/* strlen("/"), ie length of the mountpoint */
-	NULL,
-
-	{ NULL, NULL } // sentinel
-};
 
 static const struct lws_protocol_vhost_options pvo_options = {
 	NULL,
@@ -337,11 +353,37 @@ static const struct lws_protocol_vhost_options pvo_options = {
 	(void *)&test_options	/* pvo value */
 };
 
-static const struct lws_protocol_vhost_options pvo = {
-	NULL,				/* "next" pvo linked-list */
-	&pvo_options,		/* "child" pvo linked-list */
-	"dumb-increment-protocol",	/* protocol name we belong to on this vhost */
-	""				/* ignored */
+/*
+ * If we don't give any pvos, then for backwards compatibility all protocols
+ * are enabled on all vhosts.  If we give any pvos, then we must list in them
+ * the protocol names we want to enable, protocols that are not listed in the
+ * pvos are not instantiated on the vhost then.
+ */
+
+static const struct lws_protocol_vhost_options
+	pvo3 = {
+		NULL,				/* "next" pvo linked-list */
+		NULL,
+		"protocol-post-demo",	/* protocol name we belong to on this vhost */
+		""				/* not needed */
+	},
+	pvo2 = {
+		&pvo3,				/* "next" pvo linked-list */
+		NULL,
+		"lws-status",	/* protocol name we belong to on this vhost */
+		""				/* not needed */
+	},
+	pvo1 = {
+		&pvo2,				/* "next" pvo linked-list */
+		NULL,
+		"lws-mirror-protocol",	/* protocol name we belong to on this vhost */
+		""				/* not needed */
+	},
+	pvo = {
+		&pvo1,				/* "next" pvo linked-list */
+		&pvo_options,		/* "child" pvo linked-list */
+		"dumb-increment-protocol",	/* protocol name we belong to on this vhost */
+		""				/* not needed */
 };
 
 #if defined(LWS_HAS_GETOPT_LONG) || defined(WIN32)
@@ -388,13 +430,14 @@ int main(int argc, char **argv)
 	char cert_path[1024] = "";
 	char key_path[1024] = "";
 	char ca_path[1024] = "";
-	int uid = -1, gid = -1;
-	int use_ssl = 0;
-	int opts = 0;
-	int n = 0;
 #ifndef LWS_NO_DAEMONIZE
 	int daemonize = 0;
 #endif
+	uint64_t opts = 0;
+	int use_ssl = 0;
+	uid_t uid = (uid_t)-1;
+	gid_t gid = (gid_t)-1;
+	int n = 0;
 
 	/*
 	 * take care to zero down the info struct, he contains random garbaage
@@ -421,10 +464,10 @@ int main(int argc, char **argv)
 			break;
 #endif
 		case 'u':
-			uid = atoi(optarg);
+			uid = (uid_t)atoi(optarg);
 			break;
 		case 'g':
-			gid = atoi(optarg);
+			gid = (gid_t)atoi(optarg);
 			break;
 		case 'd':
 			debug_level = atoi(optarg);
@@ -532,8 +575,8 @@ int main(int argc, char **argv)
 #else
 	max_poll_elements = sysconf(_SC_OPEN_MAX);
 #endif
-	pollfds = malloc(max_poll_elements * sizeof (struct lws_pollfd));
-	fd_lookup = malloc(max_poll_elements * sizeof (int));
+	pollfds = malloc((unsigned int)max_poll_elements * sizeof (struct lws_pollfd));
+	fd_lookup = malloc((unsigned int)max_poll_elements * sizeof (int));
 	if (pollfds == NULL || fd_lookup == NULL) {
 		lwsl_err("Out of memory pollfds=%d\n", max_poll_elements);
 		return -1;
@@ -661,7 +704,11 @@ int main(int argc, char **argv)
 		/* if needed, force-service wsis that may not have read all input */
 		n = lws_service_adjust_timeout(context, 5000, 0);
 
+<<<<<<< HEAD
 		n = poll(pollfds, count_pollfds, n);
+=======
+		n = poll(pollfds, (nfds_t)count_pollfds, n);
+>>>>>>> github/v4.3-stable
 		if (n < 0)
 			continue;
 
