@@ -42,6 +42,19 @@ enum lws_tls_cert_info {
 	 * same tls backend, ie, OpenSSL or mbedTLS.  The different backends
 	 * produce different, incompatible representations for the same cert.
 	 */
+	LWS_TLS_CERT_INFO_DER_RAW,
+	/**< the certificate's raw DER representation.  If it's too big,
+	 * -1 is returned and the size will be returned in buf->ns.len.
+	 * If the certificate cannot be found -1 is returned and 0 in
+	 * buf->ns.len. */
+	LWS_TLS_CERT_INFO_AUTHORITY_KEY_ID,
+	/**< If the cert has one, the key ID responsible for the signature */
+	LWS_TLS_CERT_INFO_AUTHORITY_KEY_ID_ISSUER,
+	/**< If the cert has one, the issuer responsible for the signature */
+	LWS_TLS_CERT_INFO_AUTHORITY_KEY_ID_SERIAL,
+	/**< If the cert has one, serial number responsible for the signature */
+	LWS_TLS_CERT_INFO_SUBJECT_KEY_ID,
+	/**< If the cert has one, the cert's subject key ID */
 };
 
 union lws_tls_cert_info_results {
@@ -135,6 +148,7 @@ lws_x509_public_to_jwk(struct lws_jwk *jwk, struct lws_x509_cert *x509,
  * lws_x509_jwk_privkey_pem() - Copy a private key PEM into a jwk that has the
  *				public part already
  *
+ * \param cx: lws_context (for random)
  * \param jwk: pointer to the jwk to initialize and set to the public key
  * \param pem: pointer to PEM private key in memory
  * \param len: length of PEM private key in memory
@@ -150,8 +164,8 @@ lws_x509_public_to_jwk(struct lws_jwk *jwk, struct lws_x509_cert *x509,
  * The caller should take care to zero down passphrase if used.
  */
 LWS_VISIBLE LWS_EXTERN int
-lws_x509_jwk_privkey_pem(struct lws_jwk *jwk, void *pem, size_t len,
-			 const char *passphrase);
+lws_x509_jwk_privkey_pem(struct lws_context *cx, struct lws_jwk *jwk,
+			 void *pem, size_t len, const char *passphrase);
 
 /**
  * lws_x509_destroy() - Destroy a previously allocated lws_x509_cert object

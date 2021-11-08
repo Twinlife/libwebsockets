@@ -1,7 +1,7 @@
  /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2010 - 2020 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2010 - 2021 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -38,6 +38,18 @@ typedef enum {
 	LWS_SYSBLOB_TYPE_DEVICE_FW_VERSION,
 	LWS_SYSBLOB_TYPE_DEVICE_TYPE,
 	LWS_SYSBLOB_TYPE_NTP_SERVER,
+	LWS_SYSBLOB_TYPE_MQTT_CLIENT_ID,
+	LWS_SYSBLOB_TYPE_MQTT_USERNAME,
+	LWS_SYSBLOB_TYPE_MQTT_PASSWORD,
+
+#if defined(LWS_WITH_SECURE_STREAMS_AUTH_SIGV4)
+	/* extend 4 more auth blobs, each has 2 slots */
+	LWS_SYSBLOB_TYPE_EXT_AUTH1,
+	LWS_SYSBLOB_TYPE_EXT_AUTH2 = LWS_SYSBLOB_TYPE_EXT_AUTH1 + 2,
+	LWS_SYSBLOB_TYPE_EXT_AUTH3 = LWS_SYSBLOB_TYPE_EXT_AUTH2 + 2,
+	LWS_SYSBLOB_TYPE_EXT_AUTH4 = LWS_SYSBLOB_TYPE_EXT_AUTH3 + 2,
+	LWS_SYSBLOB_TYPE_EXT_AUTH4_1,
+#endif
 
 	LWS_SYSBLOB_TYPE_COUNT /* ... always last */
 } lws_system_blob_item_t;
@@ -127,6 +139,7 @@ typedef enum { /* keep system_state_names[] in sync in context.c */
 					  * drop everything done with old
 					  * policy, switch to new then enter
 					  * LWS_SYSTATE_POLICY_VALID */
+	LWS_SYSTATE_CONTEXT_DESTROYING,	 /* Context is being destroyed */
 } lws_system_states_t;
 
 /* Captive Portal Detect -related */
@@ -139,9 +152,13 @@ typedef enum {
 	LWS_CPD_NO_INTERNET,	/* we couldn't touch anything */
 } lws_cpd_result_t;
 
-
 typedef void (*lws_attach_cb_t)(struct lws_context *context, int tsi, void *opaque);
 struct lws_attach_item;
+
+LWS_EXTERN LWS_VISIBLE int
+lws_tls_jit_trust_got_cert_cb(struct lws_context *cx, void *got_opaque,
+			      const uint8_t *skid, size_t skid_len,
+			      const uint8_t *der, size_t der_len);
 
 typedef struct lws_system_ops {
 	int (*reboot)(void);
@@ -168,6 +185,20 @@ typedef struct lws_system_ops {
 	 * redirected or intercepted by a captive portal.
 	 * Start the check that proceeds asynchronously, and report the results
 	 * by calling lws_captive_portal_detect_result() api
+	 */
+
+	int (*metric_report)(lws_metric_pub_t *mdata);
+	/**< metric \p item is reporting an event of kind \p rpt,
+	 * held in \p mdata... return 0 to leave the metric object as it is,
+	 * or nonzero to reset it. */
+
+	int (*jit_trust_query)(struct lws_context *cx, const uint8_t *skid,
+			       size_t skid_len, void *got_opaque);
+	/**< user defined trust store search, if we do trust a cert with SKID
+	 * matching skid / skid_len, then it should get hold of the DER for the
+	 * matching root CA and call
+	 * lws_tls_jit_trust_got_cert_cb(..., got_opaque) before cleaning up and
+	 * returning.  The DER should be destroyed if in heap before returning.
 	 */
 
 	uint32_t	wake_latency_us;
@@ -257,7 +288,36 @@ __lws_system_attach(struct lws_context *context, int tsi, lws_attach_cb_t cb,
 		    struct lws_attach_item **get);
 
 
-typedef int (*dhcpc_cb_t)(void *opaque, int af, uint8_t *ip, int ip_len);
+enum {
+	LWSDH_IPV4_SUBNET_MASK		= 0,
+	LWSDH_IPV4_BROADCAST,
+	LWSDH_LEASE_SECS,
+	LWSDH_REBINDING_SECS,
+	LWSDH_RENEWAL_SECS,
+
+	_LWSDH_NUMS_COUNT,
+
+	LWSDH_SA46_IP			= 0,
+	LWSDH_SA46_DNS_SRV_1,
+	LWSDH_SA46_DNS_SRV_2,
+	LWSDH_SA46_DNS_SRV_3,
+	LWSDH_SA46_DNS_SRV_4,
+	LWSDH_SA46_IPV4_ROUTER,
+	LWSDH_SA46_NTP_SERVER,
+	LWSDH_SA46_DHCP_SERVER,
+
+	_LWSDH_SA46_COUNT,
+};
+
+typedef struct lws_dhcpc_ifstate {
+	char				ifname[16];
+	char				domain[64];
+	uint8_t				mac[6];
+	uint32_t			nums[_LWSDH_NUMS_COUNT];
+	lws_sockaddr46			sa46[_LWSDH_SA46_COUNT];
+} lws_dhcpc_ifstate_t;
+
+typedef int (*dhcpc_cb_t)(void *opaque, lws_dhcpc_ifstate_t *is);
 
 /**
  * lws_dhcpc_request() - add a network interface to dhcpc management
@@ -309,6 +369,9 @@ lws_dhcpc_status(struct lws_context *context, lws_sockaddr46 *sa46);
  */
 LWS_EXTERN LWS_VISIBLE int
 lws_system_cpd_start(struct lws_context *context);
+
+LWS_EXTERN LWS_VISIBLE void
+lws_system_cpd_start_defer(struct lws_context *cx, lws_usec_t defer_us);
 
 
 /**

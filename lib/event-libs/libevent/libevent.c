@@ -29,7 +29,7 @@
 #define wsi_to_priv_event(_w) ((struct lws_wsi_eventlibs_libevent *)(_w)->evlib_wsi)
 
 static void
-lws_event_hrtimer_cb(int fd, short event, void *p)
+lws_event_hrtimer_cb(evutil_socket_t fd, short event, void *p)
 {
 	struct lws_context_per_thread *pt = (struct lws_context_per_thread *)p;
 	struct lws_pt_eventlibs_libevent *ptpr = pt_to_priv_event(pt);
@@ -40,15 +40,20 @@ lws_event_hrtimer_cb(int fd, short event, void *p)
 	us = __lws_sul_service_ripe(pt->pt_sul_owner, LWS_COUNT_PT_SUL_OWNERS,
 				    lws_now_usecs());
 	if (us) {
-		tv.tv_sec = us / LWS_US_PER_SEC;
-		tv.tv_usec = us - (tv.tv_sec * LWS_US_PER_SEC);
+#if defined(__APPLE__)
+		tv.tv_sec = (int)(us / LWS_US_PER_SEC);
+		tv.tv_usec = (int)(us - (tv.tv_sec * LWS_US_PER_SEC));
+#else
+		tv.tv_sec = (long)(us / LWS_US_PER_SEC);
+		tv.tv_usec = (long)(us - (tv.tv_sec * LWS_US_PER_SEC));
+#endif
 		evtimer_add(ptpr->hrtimer, &tv);
 	}
 	lws_pt_unlock(pt);
 }
 
 static void
-lws_event_idle_timer_cb(int fd, short event, void *p)
+lws_event_idle_timer_cb(evutil_socket_t fd, short event, void *p)
 {
 	struct lws_context_per_thread *pt = (struct lws_context_per_thread *)p;
 	struct lws_pt_eventlibs_libevent *ptpr = pt_to_priv_event(pt);
@@ -78,16 +83,14 @@ lws_event_idle_timer_cb(int fd, short event, void *p)
 		}
 	}
 
-	lwsl_debug("%s: wait\n", __func__);
-
 	/* account for hrtimer */
 
 	lws_pt_lock(pt, __func__);
 	us = __lws_sul_service_ripe(pt->pt_sul_owner, LWS_COUNT_PT_SUL_OWNERS,
 				    lws_now_usecs());
 	if (us) {
-		tv.tv_sec = us / LWS_US_PER_SEC;
-		tv.tv_usec = us - (tv.tv_sec * LWS_US_PER_SEC);
+		tv.tv_sec = (suseconds_t)(us / LWS_US_PER_SEC);
+		tv.tv_usec = (suseconds_t)(us - (tv.tv_sec * LWS_US_PER_SEC));
 		evtimer_add(ptpr->hrtimer, &tv);
 	}
 	lws_pt_unlock(pt);
@@ -142,7 +145,7 @@ lws_event_cb(evutil_socket_t sock_fd, short revents, void *ctx)
 	lws_service_fd_tsi(context, &eventfd, wsi->tsi);
 
 	if (pt->destroy_self) {
-		lwsl_notice("%s: pt destroy self coming true\n", __func__);
+		lwsl_cx_notice(context, "pt destroy self coming true");
 		lws_context_destroy(pt->context);
 		return;
 	}
@@ -171,14 +174,32 @@ lws_event_sigint_cb(evutil_socket_t sock_fd, short revents, void *ctx)
 }
 
 static int
+elops_listen_init_event(struct lws_dll2 *d, void *user)
+{
+	struct lws *wsi = lws_container_of(d, struct lws, listen_list);
+	struct lws_context *context = (struct lws_context *)user;
+	struct lws_context_per_thread *pt = &context->pt[(int)wsi->tsi];
+	struct lws_pt_eventlibs_libevent *ptpr = pt_to_priv_event(pt);
+	struct lws_io_watcher_libevent *w_read =
+					&(wsi_to_priv_event(wsi)->w_read);
+
+	w_read->context = context;
+	w_read->watcher = event_new(ptpr->io_loop, wsi->desc.sockfd,
+				(EV_READ | EV_PERSIST), lws_event_cb, w_read);
+	event_add(w_read->watcher, NULL);
+	w_read->set = 1;
+
+	return 0;
+}
+
+static int
 elops_init_pt_event(struct lws_context *context, void *_loop, int tsi)
 {
-	struct lws_vhost *vh = context->vhost_list;
 	struct event_base *loop = (struct event_base *)_loop;
 	struct lws_context_per_thread *pt = &context->pt[tsi];
 	struct lws_pt_eventlibs_libevent *ptpr = pt_to_priv_event(pt);
 
-	lwsl_info("%s: loop %p\n", __func__, _loop);
+	lwsl_cx_info(context, "loop %p", _loop);
 
 	if (!loop)
 		loop = event_base_new();
@@ -186,33 +207,14 @@ elops_init_pt_event(struct lws_context *context, void *_loop, int tsi)
 		context->pt[tsi].event_loop_foreign = 1;
 
 	if (!loop) {
-		lwsl_err("%s: creating event base failed\n", __func__);
+		lwsl_cx_err(context, "creating event base failed");
 
 		return -1;
 	}
 
 	ptpr->io_loop = loop;
 
-	/*
-	* Initialize all events with the listening sockets
-	* and register a callback for read operations
-	*/
-
-	while (vh) {
-		if (vh->lserv_wsi) {
-			struct lws_io_watcher_libevent *w_read =
-				&(wsi_to_priv_event(vh->lserv_wsi)->w_read);
-
-			w_read->context = context;
-			w_read->watcher = event_new(
-					loop, vh->lserv_wsi->desc.sockfd,
-					(EV_READ | EV_PERSIST), lws_event_cb,
-					w_read);
-			event_add(w_read->watcher, NULL);
-			w_read->set = 1;
-		}
-		vh = vh->vhost_next;
-	}
+	lws_vhost_foreach_listen_wsi(context, context, elops_listen_init_event);
 
 	/* static event loop objects */
 
@@ -221,6 +223,12 @@ elops_init_pt_event(struct lws_context *context, void *_loop, int tsi)
 
 	ptpr->idle_timer = event_new(loop, -1, 0,
 					 lws_event_idle_timer_cb, pt);
+	{
+		struct timeval tv;
+		tv.tv_sec = (long)0;
+		tv.tv_usec = (long)1000;
+		evtimer_add(ptpr->hrtimer, &tv);
+	}
 
 	/* Register the signal watcher unless it's a foreign loop */
 
@@ -255,7 +263,7 @@ elops_accept_event(struct lws *wsi)
 	struct lws_context_per_thread *pt;
 	struct lws_pt_eventlibs_libevent *ptpr;
 	struct lws_wsi_eventlibs_libevent *wpr = wsi_to_priv_event(wsi);
-	int fd;
+       evutil_socket_t fd;
 
 	wpr->w_read.context = context;
 	wpr->w_write.context = context;
@@ -265,7 +273,7 @@ elops_accept_event(struct lws *wsi)
 	ptpr = pt_to_priv_event(pt);
 
 	if (wsi->role_ops->file_handle)
-		fd = wsi->desc.filefd;
+               fd = (evutil_socket_t)(ev_intptr_t) wsi->desc.filefd;
 	else
 		fd = wsi->desc.sockfd;
 
@@ -278,7 +286,7 @@ elops_accept_event(struct lws *wsi)
 }
 
 static void
-elops_io_event(struct lws *wsi, int flags)
+elops_io_event(struct lws *wsi, unsigned int flags)
 {
 	struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
 	struct lws_pt_eventlibs_libevent *ptpr = pt_to_priv_event(pt);
@@ -323,33 +331,30 @@ elops_run_pt_event(struct lws_context *context, int tsi)
 			pt_to_priv_event(&context->pt[tsi])->io_loop);
 }
 
+static int
+elops_listen_destroy_event(struct lws_dll2 *d, void *user)
+{
+	struct lws *wsi = lws_container_of(d, struct lws, listen_list);
+	struct lws_wsi_eventlibs_libevent *w = wsi_to_priv_event(wsi);
+
+	event_free(w->w_read.watcher);
+	w->w_read.watcher = NULL;
+	event_free(w->w_write.watcher);
+	w->w_write.watcher = NULL;
+
+	return 0;
+}
+
 static void
 elops_destroy_pt_event(struct lws_context *context, int tsi)
 {
 	struct lws_context_per_thread *pt = &context->pt[tsi];
 	struct lws_pt_eventlibs_libevent *ptpr = pt_to_priv_event(pt);
-	struct lws_vhost *vh = context->vhost_list;
-
-	lwsl_info("%s\n", __func__);
 
 	if (!ptpr->io_loop)
 		return;
 
-	/*
-	 * Free all events with the listening sockets
-	 */
-	while (vh) {
-		if (vh->lserv_wsi) {
-			struct lws_wsi_eventlibs_libevent *w =
-				wsi_to_priv_event(vh->lserv_wsi);
-
-			event_free(w->w_read.watcher);
-			w->w_read.watcher = NULL;
-			event_free(w->w_write.watcher);
-			w->w_write.watcher = NULL;
-		}
-		vh = vh->vhost_next;
-	}
+	lws_vhost_foreach_listen_wsi(context, context, elops_listen_destroy_event);
 
 	event_free(ptpr->hrtimer);
 	event_free(ptpr->idle_timer);
@@ -360,7 +365,7 @@ elops_destroy_pt_event(struct lws_context *context, int tsi)
 		event_base_loopexit(ptpr->io_loop, NULL);
 	//	event_base_free(pt->event.io_loop);
 	//	pt->event.io_loop = NULL;
-		lwsl_notice("%s: set to exit loop\n", __func__);
+		lwsl_cx_notice(context, "set to exit loop");
 	}
 }
 
@@ -404,7 +409,7 @@ elops_init_vhost_listen_wsi_event(struct lws *wsi)
 	struct lws_context_per_thread *pt;
 	struct lws_pt_eventlibs_libevent *ptpr;
 	struct lws_wsi_eventlibs_libevent *w;
-	int fd;
+       evutil_socket_t fd;
 
 	if (!wsi) {
 		assert(0);
@@ -420,7 +425,7 @@ elops_init_vhost_listen_wsi_event(struct lws *wsi)
 	ptpr = pt_to_priv_event(pt);
 
 	if (wsi->role_ops->file_handle)
-		fd = wsi->desc.filefd;
+               fd = (evutil_socket_t) wsi->desc.filefd;
 	else
 		fd = wsi->desc.sockfd;
 
@@ -442,8 +447,6 @@ elops_destroy_context2_event(struct lws_context *context)
 	struct lws_pt_eventlibs_libevent *ptpr;
 	int n, m;
 
-	lwsl_debug("%s: in\n", __func__);
-
 	for (n = 0; n < context->count_threads; n++) {
 		int budget = 1000;
 
@@ -455,27 +458,19 @@ elops_destroy_context2_event(struct lws_context *context)
 		if (pt->event_loop_foreign || !ptpr->io_loop)
 			continue;
 
-		if (!context->finalize_destroy_after_internal_loops_stopped) {
+		if (!context->evlib_finalize_destroy_after_int_loops_stop) {
 			event_base_loopexit(ptpr->io_loop, NULL);
 			continue;
 		}
 		while (budget-- &&
 		       (m = event_base_loop(ptpr->io_loop, EVLOOP_NONBLOCK)))
 			;
-#if 0
-		if (m) {
-			lwsl_err("%s: tsi %d: NOT everything closed\n",
-				 __func__, n);
-			event_base_dump_events(ptpr->io_loop, stderr);
-		} else
-			lwsl_debug("%s: %d: everything closed OK\n", __func__, n);
-#endif
-		lwsl_err("%s: event_base_free\n", __func__);
+
+		lwsl_cx_info(context, "event_base_free");
+
 		event_base_free(ptpr->io_loop);
 		ptpr->io_loop = NULL;
 	}
-
-	lwsl_debug("%s: out\n", __func__);
 
 	return 0;
 }
@@ -495,6 +490,7 @@ static const struct lws_event_loop_ops event_loop_ops_event = {
 	/* run_pt */			elops_run_pt_event,
 	/* destroy_pt */		elops_destroy_pt_event,
 	/* destroy wsi */		elops_destroy_wsi_event,
+	/* foreign_thread */		NULL,
 
 	/* flags */			0,
 
@@ -511,6 +507,7 @@ const lws_plugin_evlib_t evlib_event = {
 	.hdr = {
 		"libevent event loop",
 		"lws_evlib_plugin",
+		LWS_BUILD_HASH,
 		LWS_PLUGIN_API_MAGIC
 	},
 

@@ -1,7 +1,7 @@
 /*
- * lws-minimal-secure-streams
+ * lws-minimal-secure-streams-staticpolicy
  *
- * Written in 2010-2020 by Andy Green <andy@warmcat.com>
+ * Written in 2010-2021 by Andy Green <andy@warmcat.com>
  *
  * This file is made available under the Creative Commons CC0 1.0
  * Universal Public Domain Dedication.
@@ -36,7 +36,7 @@ static lws_state_notify_link_t nl;
 
 
 typedef struct myss {
-	struct lws_ss_handle 		*ss;
+	struct lws_ss_handle		*ss;
 	void				*opaque_data;
 	/* ... application specific state ... */
 	lws_sorted_usec_list_t		sul;
@@ -98,10 +98,12 @@ myss_state(void *userobj, void *sh, lws_ss_constate_t state,
 
 	switch (state) {
 	case LWSSSCS_CREATING:
-		lws_ss_set_metadata(m->ss, "uptag", "myuptag123", 10);
-		lws_ss_set_metadata(m->ss, "ctype", "myctype", 7);
-		lws_ss_client_connect(m->ss);
-		break;
+		if (lws_ss_set_metadata(m->ss, "uptag", "myuptag123", 10))
+			lwsl_err("%s set metadata uptag failed\n", __func__);
+		if (lws_ss_set_metadata(m->ss, "ctype", "myctype", 7))
+			lwsl_err("%s set metadata ctype failed\n", __func__);
+		return lws_ss_client_connect(m->ss);
+
 	case LWSSSCS_ALL_RETRIES_FAILED:
 		/* if we're out of retries, we want to close the app and FAIL */
 		interrupted = 1;
@@ -230,10 +232,6 @@ int main(int argc, const char **argv)
 	info.options = LWS_SERVER_OPTION_EXPLICIT_VHOSTS |
 		       LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
 #endif
-#if defined(LWS_WITH_DETAILED_LATENCY)
-	info.detailed_latency_cb = lws_det_lat_plot_cb;
-	info.detailed_latency_filepath = "/tmp/lws-latency-ssproxy";
-#endif
 
 	/* integrate us with lws system state management when context created */
 
@@ -276,7 +274,7 @@ int main(int argc, const char **argv)
 
 	lws_system_blob_heap_append(lws_system_get_blob(context,
 				    LWS_SYSBLOB_TYPE_DEVICE_TYPE, 0),
-				   (const uint8_t *)"spacerocket", 11);
+				    (const uint8_t *)"spacerocket", 11);
 
 	/* the event loop */
 

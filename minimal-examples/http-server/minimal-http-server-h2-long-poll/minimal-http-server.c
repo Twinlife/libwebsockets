@@ -87,7 +87,7 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 			break;
 		n = lws_snprintf((char *)p, sizeof(buf) - LWS_PRE, "%llu",
 				 (unsigned long long)lws_now_usecs());
-		m = lws_write(wsi, p, n, LWS_WRITE_HTTP);
+		m = lws_write(wsi, p, (unsigned int)n, LWS_WRITE_HTTP);
 		if (m < n) {
 			lwsl_err("ERROR %d writing to socket\n", n);
 			return -1;
@@ -101,8 +101,8 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 }
 
 static struct lws_protocols protocols[] = {
-	{ "http", callback_http, sizeof(struct pss), 0 },
-	{ NULL, NULL, 0, 0 } /* terminator */
+	{ "http", callback_http, sizeof(struct pss), 0, 0, NULL, 0 },
+	LWS_PROTOCOL_LIST_TERM
 };
 
 

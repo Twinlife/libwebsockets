@@ -46,7 +46,7 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason,
 			char buf[128];
 
 			lws_get_peer_simple(wsi, buf, sizeof(buf));
-			status = lws_http_client_http_response(wsi);
+			status = (int)lws_http_client_http_response(wsi);
 
 			lwsl_user("Connected to %s, http response: %d\n",
 					buf, status);
@@ -106,10 +106,9 @@ static const struct lws_protocols protocols[] = {
 	{
 		"http",
 		callback_http,
-		0,
-		0,
+		0, 0, 0, NULL, 0
 	},
-	{ NULL, NULL, 0, 0 }
+	LWS_PROTOCOL_LIST_TERM
 };
 
 void sigint_handler(int sig)
@@ -181,7 +180,7 @@ lws_create(void *d)
 {
 	struct lws_context_creation_info info;
 
-	lwsl_user("%s: tid %p\n", __func__, (void *)pthread_self());
+       lwsl_user("%s: tid %p\n", __func__, (void *)(intptr_t)pthread_self());
 
 	memset(&info, 0, sizeof info); /* otherwise uninitialized garbage */
 	info.port = CONTEXT_PORT_NO_LISTEN;

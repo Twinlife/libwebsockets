@@ -1,5 +1,5 @@
 project(lws-api-test-lws_smd C)
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 2.8.12)
 find_package(libwebsockets CONFIG REQUIRED)
 list(APPEND CMAKE_MODULE_PATH ${LWS_CMAKE_DIR})
 include(CheckCSourceCompiles)
@@ -8,10 +8,11 @@ include(LwsCheckRequirements)
 set(requirements 1)
 require_pthreads(requirements)
 require_lws_config(LWS_WITH_SYS_SMD 1 requirements)
+require_lws_config(LWS_WITH_SYS_STATE 1 requirements)
 
 if (requirements)
 	add_executable(${PROJECT_NAME} main.c)
-	add_test(NAME api-test-lws_smd COMMAND lws-api-test-lws_smd -d1039)
+	add_test(NAME api-test-lws_smd COMMAND lws-api-test-lws_smd -d1151)
 	set_tests_properties(api-test-lws_smd
 			     PROPERTIES
 			     RUN_SERIAL TRUE
