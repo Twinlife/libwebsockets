@@ -50,7 +50,8 @@ JNI_FUNCTION_DECLARATION(jlong,
 			 jstring j_proxy_address,
 			 jint proxy_port,
 			 jstring j_proxy_username,
-			 jstring j_proxy_password) {
+			 jstring j_proxy_password,
+			 jstring j_proxy_path) {
 
   Container* container = reinterpret_cast<Container*>(container_p);
   const char* host = j_host ? jni->GetStringUTFChars(j_host, NULL) : NULL;
@@ -75,8 +76,13 @@ JNI_FUNCTION_DECLARATION(jlong,
     proxy_password = jni->GetStringUTFChars(j_proxy_password, NULL);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
+  const char* proxy_path = NULL;
+  if (!IsNull(jni, j_proxy_path)) {
+    proxy_path = jni->GetStringUTFChars(j_proxy_path, NULL);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
   jlong websocket_id = container->CreateWebSocket(sessionId, port, host, path, secure,
-						  proxy_address, proxy_port, proxy_username, proxy_password);
+						  proxy_address, proxy_port, proxy_username, proxy_password, proxy_path);
   if (host) {
     jni->ReleaseStringUTFChars(j_host, host);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
@@ -95,6 +101,10 @@ JNI_FUNCTION_DECLARATION(jlong,
   }
   if (proxy_password) {
     jni->ReleaseStringUTFChars(j_proxy_password, proxy_password);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  if (proxy_path) {
+    jni->ReleaseStringUTFChars(j_proxy_path, proxy_path);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
   return websocket_id;

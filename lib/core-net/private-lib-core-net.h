@@ -496,6 +496,9 @@ struct lws_vhost {
 #if defined(LWS_WITH_CLIENT) && defined(LWS_CLIENT_HTTP_PROXYING)
 	char proxy_basic_auth_token[128];
 #endif
+// --twinlife-- 211108
+	char proxy_path[128];
+// --twinlife-- 211108
 #if LWS_MAX_SMP > 1
 	pthread_mutex_t lock;
 	char close_flow_vs_tsi[LWS_MAX_SMP];
