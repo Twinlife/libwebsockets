@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2018-2019 twinlife SA.
+ *  Copyright (c) 2018-2021 twinlife SA.
  *
  *  All Rights Reserved.
  *  
@@ -30,9 +30,10 @@ class ObserverJni {
 
   ~ObserverJni();
 
-  void OnConnect(jlong session_id, jlong websocket_id);
+  void OnConnect(jlong session_id, jlong websocket_id, const char* ip, const jlong *stats, jsize stats_length);
 
-  void OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length);
+  void OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length,
+                      const jlong *stats, jsize stats_length);
   
   bool OnWritable(jlong session_id, jlong websocket_id);
 

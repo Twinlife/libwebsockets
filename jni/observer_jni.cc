@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2018-2019 twinlife SA.
+ *  Copyright (c) 2018-2021 twinlife SA.
  *
  *  All Rights Reserved.
  *  
@@ -24,8 +24,8 @@ namespace jni {
 ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
   : j_observer_global_(jni, j_observer),
     j_observer_class_(jni, GetObjectClass(jni, *j_observer_global_)),
-    j_on_connect_(GetMethodID(jni, *j_observer_class_, "onConnect", "(JJ)V")),
-    j_on_connect_error_(GetMethodID(jni, *j_observer_class_, "onConnectError", "(JJLjava/lang/String;)V")),
+    j_on_connect_(GetMethodID(jni, *j_observer_class_, "onConnect", "(JJLjava/lang/String;[J)V")),
+    j_on_connect_error_(GetMethodID(jni, *j_observer_class_, "onConnectError", "(JJLjava/lang/String;[J)V")),
     j_on_writable_(GetMethodID(jni, *j_observer_class_, "onWritable", "(JJ)Z")),
     j_on_message_(GetMethodID(jni, *j_observer_class_, "onMessage", "(JJLjava/nio/ByteBuffer;Z)V")),
     j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(JJ)V")),
@@ -35,15 +35,19 @@ ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
 ObserverJni::~ObserverJni() {
 }  
 
-void ObserverJni::OnConnect(jlong session_id, jlong websocket_id) {
+void ObserverJni::OnConnect(jlong session_id, jlong websocket_id, const char* ip, const jlong* stats, jsize stats_length) {
 
   JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
   ScopedLocalRefFrame local_ref_frame(env);
-  env->CallVoidMethod(*j_observer_global_, j_on_connect_, session_id, websocket_id);
+  jstring j_ip = NativeToJavaString(env, std::string(ip));
+  jlongArray j_stats = env->NewLongArray(stats_length);
+  env->SetLongArrayRegion(j_stats, 0, stats_length, stats);
+  env->CallVoidMethod(*j_observer_global_, j_on_connect_, session_id, websocket_id, j_ip, j_stats);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length) {
+void ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length,
+                                 const jlong* stats, jsize stats_length) {
 
   JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
   ScopedLocalRefFrame local_ref_frame(env);
@@ -51,7 +55,9 @@ void ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const cha
   if (diagnostic) {
     j_diagnostic = NativeToJavaString(env, std::string(diagnostic));
   }
-  env->CallVoidMethod(*j_observer_global_, j_on_connect_error_, session_id, websocket_id, j_diagnostic);
+  jlongArray j_stats = env->NewLongArray(stats_length);
+  env->SetLongArrayRegion(j_stats, 0, stats_length, stats);
+  env->CallVoidMethod(*j_observer_global_, j_on_connect_error_, session_id, websocket_id, j_diagnostic, j_stats);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 

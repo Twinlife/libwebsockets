@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2018-2019 twinlife SA.
+ *  Copyright (c) 2018-2021 twinlife SA.
  *
  *  All Rights Reserved.
  *  
@@ -257,11 +257,49 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
   switch(reason) {
 
   case LWS_CALLBACK_CLIENT_ESTABLISHED:
-    observer_->OnConnect(session_id, websocket_id);
+       {
+          struct lws_conmon cm;
+          jlong stats[5];
+          char ip_addr[INET6_ADDRSTRLEN];
+
+          lws_conmon_wsi_take(wsi, &cm);
+ 
+          stats[0] = cm.dns_disposition;
+          stats[1] = cm.ciu_dns;
+          stats[2] = cm.ciu_sockconn;
+          stats[3] = cm.ciu_tls;
+          stats[4] = cm.ciu_txn_resp;
+
+          lws_sa46_write_numeric_address(&cm.peer46, ip_addr, sizeof(ip_addr));
+
+          lwsl_debug("DNS: %u Connect: %u TLS: %u TXN: %u to %s\n",
+                     cm.ciu_dns, cm.ciu_sockconn, cm.ciu_tls, cm.ciu_txn_resp, ip_addr);
+          lws_conmon_release(&cm);
+
+          observer_->OnConnect(session_id, websocket_id, ip_addr, stats, 5);
+       }
+     
     break;
 
   case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-    observer_->OnConnectError(session_id, websocket_id, (const char *)in, len);
+       {
+          struct lws_conmon cm;
+          jlong stats[5];
+
+          lws_conmon_wsi_take(wsi, &cm);
+
+          stats[0] = cm.dns_disposition;
+          stats[1] = cm.ciu_dns;
+          stats[2] = cm.ciu_sockconn;
+          stats[3] = cm.ciu_tls;
+          stats[4] = cm.ciu_txn_resp;
+
+          lwsl_debug("DNS: %u Connect: %u TLS: %u TXN: %u\n",
+                     cm.ciu_dns, cm.ciu_sockconn, cm.ciu_tls, cm.ciu_txn_resp);
+          lws_conmon_release(&cm);
+
+          observer_->OnConnectError(session_id, websocket_id, (const char *)in, len, stats, 5);
+       }
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:

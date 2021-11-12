@@ -29,6 +29,7 @@ rtc_library("libwebsockets") {
     "LWS_HAVE_SYS_SOCKET_H",
     "LWS_HAVE_SYS_STAT_H",
     "LWS_HAVE_SYS_TYPES_H",
+    "LWS_HAVE_SYS_RESOURCE_H",
     "LWS_HAVE_UNISTD_H",
     "LWS_HAVE_VFORK",
     "LWS_HAVE_WORKING_FORK",
@@ -46,6 +47,7 @@ rtc_library("libwebsockets") {
     "LWS_WITH_NETWORK",
     "LWS_WITH_CLIENT",
     "LWS_WITH_SERVER",
+    "LWS_WITH_CONMON",
 #    "LWS_WITH_SYS_ASYNC_DNS",
     "LWS_WITHOUT_EXTENSIONS",
     "LWS_WITH_POLL",
@@ -109,6 +111,7 @@ rtc_library("libwebsockets") {
     "lib/plat/unix",
     "lib/tls",
     "lib/event-libs",
+    "lib/system/metrics",
   ]
     
   sources = [
@@ -161,9 +164,6 @@ rtc_library("libwebsockets") {
     "lib/core-net/adopt.c",
     "lib/roles/pipe/ops-pipe.c",
     "lib/core-net/state.c",
-    "lib/core-net/client.c",
-    "lib/core-net/connect.c",
-    "lib/core-net/server.c",
     "lib/roles/http/header.c",
     "lib/roles/http/parsers.c",
     "lib/roles/h1/ops-h1.c",
@@ -178,9 +178,17 @@ rtc_library("libwebsockets") {
     "lib/roles/raw-proxy/ops-raw-proxy.c",
     "lib/roles/listen/ops-listen.c",
     "lib/roles/http/client/client-http.c",
-    "lib/roles/http/client/client-handshake.c",
     "lib/roles/http/server/server-http.c",
     "lib/event-libs/poll/poll.c",   
+    "lib/core-net/client/client.c",
+    "lib/core-net/client/conmon.c",
+    "lib/core-net/client/connect.c",
+    "lib/core-net/client/connect2.c",
+    "lib/core-net/client/connect3.c",
+    "lib/core-net/client/connect4.c",
+    "lib/core-net/client/sort-dns.c",
+    "lib/core-net/route.c",
+    "lib/roles/netlink/ops-netlink.c",
 
 # Async DNS (main branch only and produces some crash)
 #    "lib/roles/http/date.c",
@@ -192,7 +200,6 @@ rtc_library("libwebsockets") {
 #    "lib/core-net/client/sort-dns.c",
 #    "lib/system/async-dns/async-dns.c",
 #    "lib/system/async-dns/async-dns-parse.c",
-#    "lib/roles/netlink/ops-netlink.c",
 ]
  deps = [
     "//rtc_base:rtc_base",
