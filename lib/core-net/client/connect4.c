@@ -64,21 +64,30 @@ lws_client_connect_4_established(struct lws *wsi, struct lws *wsi_piggyback,
 
 		lwsl_wsi_info(wsi, "going via proxy");
 
-		plen = lws_snprintf((char *)pt->serv_buf, 256,
-			"CONNECT %s:%u HTTP/1.1\x0d\x0a"
-			"Host: %s:%u\x0d\x0a"
-			"User-agent: lws\x0d\x0a", cpa, wsi->ocport,
-						   cpa, wsi->ocport);
+// --twinlife-- 211108
+		if (wsi->a.vhost->proxy_path[0]) {
+			plen = lws_snprintf((char *)pt->serv_buf, 256,
+				"GET /%s HTTP/1.1\x0d\x0a"
+				"Host: %s\x0d\x0a", wsi->a.vhost->proxy_path,
+					            wsi->a.vhost->http.http_proxy_address);
+			plen += lws_snprintf((char *)pt->serv_buf + plen, 5, "\x0d\x0a");
+		} else {
+			plen = lws_snprintf((char *)pt->serv_buf, 256,
+				"CONNECT %s:%u HTTP/1.1\x0d\x0a"
+				"Host: %s:%u\x0d\x0a"
+				"User-agent: lws\x0d\x0a", cpa, wsi->ocport,
+							   cpa, wsi->ocport);
 
 #if defined(LWS_WITH_HTTP_BASIC_AUTH)
-		if (wsi->a.vhost->proxy_basic_auth_token[0])
-			plen += lws_snprintf((char *)pt->serv_buf + plen, 256,
-					"Proxy-authorization: basic %s\x0d\x0a",
-					wsi->a.vhost->proxy_basic_auth_token);
+			if (wsi->a.vhost->proxy_basic_auth_token[0])
+				plen += lws_snprintf((char *)pt->serv_buf + plen, 256,
+						"Proxy-authorization: basic %s\x0d\x0a",
+						wsi->a.vhost->proxy_basic_auth_token);
 #endif
 
-		plen += lws_snprintf((char *)pt->serv_buf + plen, 5,
-					"\x0d\x0a");
+			plen += lws_snprintf((char *)pt->serv_buf + plen, 5, "\x0d\x0a");
+		}
+// --twinlife-- 211108
 
 		/* lwsl_hexdump_notice(pt->serv_buf, plen); */
 

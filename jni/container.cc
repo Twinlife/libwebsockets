@@ -115,7 +115,7 @@ Container::~Container() {
 }  
 
 jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, const char* path, bool secure,
-				 const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password) {
+				 const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password, const char* proxy_path) {
 
   if (context_) {
     struct lws_vhost* vhost = lws_create_vhost(context_, &info_);
@@ -135,14 +135,22 @@ jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, c
 		  sizeof(vhost->proxy_basic_auth_token) - 1);
 	  vhost->proxy_basic_auth_token[sizeof(vhost->proxy_basic_auth_token) - 1] = '\0';
 	  lws_free(auth_token);
+	  vhost->proxy_path[0] = '\0';
           lwsl_debug("Connect through proxy %s port %d token %s\n", vhost->http.http_proxy_address, vhost->http.http_proxy_port, auth_token);
+	} else if (proxy_path) {
+	  vhost->proxy_basic_auth_token[0] = '\0';
+	  strncpy(vhost->proxy_path, proxy_path, sizeof(vhost->proxy_path) - 1);
+	  vhost->proxy_path[sizeof(vhost->proxy_path) - 1] = '\0';
+          lwsl_debug("Connect through proxy %s port %d path %s\n", vhost->http.http_proxy_address, vhost->http.http_proxy_port, vhost->proxy_path);
 	} else {
 	  vhost->proxy_basic_auth_token[0] = '\0';
+	  vhost->proxy_path[0] = '\0';
 	}
       } else {
 	vhost->http.http_proxy_port = 0;
 	vhost->http.http_proxy_address[0] = '\0';
 	vhost->proxy_basic_auth_token[0] = '\0';
+	vhost->proxy_path[0] = '\0';
       }
     }
 
