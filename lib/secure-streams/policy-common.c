@@ -1,7 +1,7 @@
 /*
  * libwebsockets - small server side websockets and web server implementation
  *
- * Copyright (C) 2019 - 2020 Andy Green <andy@warmcat.com>
+ * Copyright (C) 2019 - 2021 Andy Green <andy@warmcat.com>
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
@@ -56,33 +56,199 @@ lws_ss_policy_lookup(const struct lws_context *context, const char *streamtype)
 }
 
 int
+_lws_ss_set_metadata(lws_ss_metadata_t *omd, const char *name,
+		     const void *value, size_t len)
+{
+	/*
+	 * If there was already a heap-based value, it's about to go out of
+	 * scope due to us trashing the pointer.  So free it first and clear
+	 * its flag indicating it's heap-based.
+	 */
+
+	if (omd->value_on_lws_heap) {
+		lws_free_set_NULL(omd->value__may_own_heap);
+		omd->value_on_lws_heap = 0;
+	}
+
+	// lwsl_notice("%s: %s %s\n", __func__, name, (const char *)value);
+
+	omd->name = name;
+	omd->value__may_own_heap = (void *)value;
+	omd->length = len;
+
+	return 0;
+}
+
+int
 lws_ss_set_metadata(struct lws_ss_handle *h, const char *name,
 		    const void *value, size_t len)
 {
-	lws_ss_metadata_t *omd = lws_ss_policy_metadata(h->policy, name);
+	lws_ss_metadata_t *omd = lws_ss_get_handle_metadata(h, name);
+
+	lws_service_assert_loop_thread(h->context, h->tsi);
+
+	if (omd)
+		return _lws_ss_set_metadata(omd, name, value, len);
+
+#if defined(LWS_WITH_SS_DIRECT_PROTOCOL_STR)
+	if (h->policy->flags & LWSSSPOLF_DIRECT_PROTO_STR) {
+		omd = lws_ss_get_handle_instant_metadata(h, name);
+		if (!omd) {
+			omd = lws_zalloc(sizeof(*omd), "imetadata");
+			if (!omd) {
+				lwsl_err("%s OOM\n", __func__);
+				return 1;
+			}
+			omd->name = name;
+			omd->next = h->instant_metadata;
+			h->instant_metadata = omd;
+		}
+		omd->value__may_own_heap = (void *)value;
+		omd->length = len;
+
+		return 0;
+	}
+#endif
+
+	lwsl_info("%s: unknown metadata %s\n", __func__, name);
+	return 1;
+}
+
+int
+_lws_ss_alloc_set_metadata(lws_ss_metadata_t *omd, const char *name,
+			   const void *value, size_t len)
+{
+	uint8_t *p;
+	int n;
+
+	if (omd->value_on_lws_heap) {
+		lws_free_set_NULL(omd->value__may_own_heap);
+		omd->value_on_lws_heap = 0;
+	}
+
+	p = lws_malloc(len, __func__);
+	if (!p)
+		return 1;
+
+	n = _lws_ss_set_metadata(omd, name, p, len);
+	if (n) {
+		lws_free(p);
+		return n;
+	}
+
+	memcpy(p, value, len);
+
+	omd->value_on_lws_heap = 1;
+
+	return 0;
+}
+
+int
+lws_ss_alloc_set_metadata(struct lws_ss_handle *h, const char *name,
+			  const void *value, size_t len)
+{
+	lws_ss_metadata_t *omd = lws_ss_get_handle_metadata(h, name);
+
+	lws_service_assert_loop_thread(h->context, h->tsi);
 
 	if (!omd) {
 		lwsl_info("%s: unknown metadata %s\n", __func__, name);
 		return 1;
 	}
 
-	h->metadata[omd->length].name = name;
-	h->metadata[omd->length].value = (void *)value;
-	h->metadata[omd->length].length = len;
+	return _lws_ss_alloc_set_metadata(omd, name, value, len);
+}
+
+int
+lws_ss_get_metadata(struct lws_ss_handle *h, const char *name,
+		    const void **value, size_t *len)
+{
+	lws_ss_metadata_t *omd = lws_ss_get_handle_metadata(h, name);
+#if defined(LWS_WITH_SS_DIRECT_PROTOCOL_STR)
+	int n;
+#endif
+
+	lws_service_assert_loop_thread(h->context, h->tsi);
+
+	if (omd) {
+		*value = omd->value__may_own_heap;
+		*len = omd->length;
+
+		return 0;
+	}
+#if defined(LWS_WITH_SS_DIRECT_PROTOCOL_STR)
+	if (!(h->policy->flags & LWSSSPOLF_DIRECT_PROTO_STR))
+		goto bail;
+
+	n = lws_http_string_to_known_header(name, strlen(name));
+	if (n != LWS_HTTP_NO_KNOWN_HEADER) {
+		*len = (size_t)lws_hdr_total_length(h->wsi, n);
+		if (!*len)
+			goto bail;
+		*value = lws_hdr_simple_ptr(h->wsi, n);
+		if (!*value)
+			goto bail;
+
+		return 0;
+	}
+#if defined(LWS_WITH_CUSTOM_HEADERS)
+	n = lws_hdr_custom_length(h->wsi, (const char *)name,
+				  (int)strlen(name));
+	if (n <= 0)
+		goto bail;
+	*value = lwsac_use(&h->imd_ac, (size_t)(n+1), (size_t)(n+1));
+	if (!*value) {
+		lwsl_err("%s ac OOM\n", __func__);
+		return 1;
+	}
+	if (lws_hdr_custom_copy(h->wsi, (char *)(*value), n+1, name,
+				(int)strlen(name))) {
+		/* waste n+1 bytes until ss is destryed */
+		goto bail;
+	}
+	*len = (size_t)n;
 
 	return 0;
+#endif
+
+bail:
+#endif
+	lwsl_info("%s: unknown metadata %s\n", __func__, name);
+
+	return 1;
 }
 
 lws_ss_metadata_t *
 lws_ss_get_handle_metadata(struct lws_ss_handle *h, const char *name)
 {
-	lws_ss_metadata_t *omd = lws_ss_policy_metadata(h->policy, name);
+	int n;
 
-	if (!omd)
-		return NULL;
+	lws_service_assert_loop_thread(h->context, h->tsi);
 
-	return &h->metadata[omd->length];
+	for (n = 0; n < h->policy->metadata_count; n++)
+		if (!strcmp(name, h->metadata[n].name))
+			return &h->metadata[n];
+
+	return NULL;
 }
+
+#if defined(LWS_WITH_SS_DIRECT_PROTOCOL_STR)
+lws_ss_metadata_t *
+lws_ss_get_handle_instant_metadata(struct lws_ss_handle *h, const char *name)
+{
+	lws_ss_metadata_t *imd = h->instant_metadata;
+
+	while (imd) {
+		if (!strcmp(name, imd->name))
+			return imd;
+		imd = imd->next;
+	}
+
+	return NULL;
+}
+
+#endif
+
 
 lws_ss_metadata_t *
 lws_ss_policy_metadata(const lws_ss_policy_t *p, const char *name)
@@ -201,7 +367,7 @@ lws_ss_policy_ref_trust_store(struct lws_context *context,
 	}
 
 accepted:
-#if defined(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY)
+#if defined(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY) || defined(LWS_WITH_SECURE_STREAMS_CPP)
 	if (doref)
 		v->ss_refcount++;
 #endif
@@ -209,7 +375,7 @@ accepted:
 	return v;
 }
 
-#if defined(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY)
+#if defined(LWS_WITH_SECURE_STREAMS_STATIC_POLICY_ONLY) || defined(LWS_WITH_SECURE_STREAMS_CPP)
 int
 lws_ss_policy_unref_trust_store(struct lws_context *context,
 				const lws_ss_policy_t *pol)
@@ -254,10 +420,24 @@ lws_ss_policy_set(struct lws_context *context, const char *name)
 	 * policy that's laid out in args->ac
 	 */
 
+	if (!args)
+		return 1;
+
 	lejp_destruct(&args->jctx);
 
 	if (context->ac_policy) {
 		int n;
+
+#if defined(LWS_WITH_SYS_METRICS)
+		lws_start_foreach_dll_safe(struct lws_dll2 *, d, d1,
+					   context->owner_mtr_dynpol.head) {
+			lws_metric_policy_dyn_t *dm =
+				lws_container_of(d, lws_metric_policy_dyn_t, list);
+
+			lws_metric_policy_dyn_destroy(dm, 1); /* keep */
+
+		} lws_end_foreach_dll_safe(d, d1);
+#endif
 
 		/*
 		 * any existing ss created with the old policy have to go away
@@ -285,21 +465,35 @@ lws_ss_policy_set(struct lws_context *context, const char *name)
 		 * ...but when we did the trust stores, we created vhosts for
 		 * each.  We need to destroy those now too, and recreate new
 		 * ones from the new policy, perhaps with different X.509s.
+		 *
+		 * Vhost destruction is inherently async, it can't be destroyed
+		 * until all of the wsi bound to it have closed, and, eg, libuv
+		 * means their closure is deferred until a later go around the
+		 * event loop.  SMP means we also have to wait for all the pts
+		 * to close their wsis that are bound on the vhost too.
+		 *
+		 * This marks the vhost as being destroyed so new things won't
+		 * use it, and starts the close of all wsi on this pt that are
+		 * bound to the wsi, and deals with the listen socket if any.
+		 * "being-destroyed" vhosts can't be found using get_vhost_by_
+		 * name(), so if a new vhost of the same name exists that isn't
+		 * being destroyed that will be the one found.
+		 *
+		 * When the number of wsi bound to the vhost gets to zero a
+		 * short time later, the vhost is actually destroyed.
 		 */
 
 		v = context->vhost_list;
 		while (v) {
 			if (v->from_ss_policy) {
 				struct lws_vhost *vh = v->vhost_next;
-				lwsl_debug("%s: destroying vh %p\n", __func__, v);
+				lwsl_debug("%s: destroying %s\n", __func__, lws_vh_tag(v));
 				lws_vhost_destroy(v);
 				v = vh;
 				continue;
 			}
 			v = v->vhost_next;
 		}
-
-		lws_check_deferred_free(context, 0, 1);
 	}
 
 	context->pss_policies = args->heads[LTY_POLICY].p;
@@ -379,9 +573,26 @@ lws_ss_policy_set(struct lws_context *context, const char *name)
 		x = x->next;
 	}
 
+	context->last_policy = time(NULL);
+#if defined(LWS_WITH_SYS_METRICS)
+	if (context->pss_policies)
+		((lws_ss_policy_t *)context->pss_policies)->metrics =
+						args->heads[LTY_METRICS].m;
+#endif
+
 	/* and we can discard the parsing args object now, invalidating args */
 
 	lws_free_set_NULL(context->pol_args);
+#endif
+
+#if defined(LWS_WITH_SYS_METRICS)
+	lws_metric_rebind_policies(context);
+#endif
+
+#if defined(LWS_WITH_SYS_SMD)
+	(void)lws_smd_msg_printf(context, LWSSMDCL_SYSTEM_STATE,
+				 "{\"policy\":\"updated\",\"ts\":%lu}",
+				   (long)context->last_policy);
 #endif
 
 	return ret;

@@ -51,7 +51,7 @@ callback_http(struct lws *wsi, enum lws_callback_reasons reason,
 	}
 
 	case LWS_CALLBACK_ESTABLISHED_CLIENT_HTTP:
-		status = lws_http_client_http_response(wsi);
+		status = (int)lws_http_client_http_response(wsi);
 		lwsl_user("Connected with server response: %d\n", status);
 
 		/*
@@ -128,10 +128,9 @@ static const struct lws_protocols protocols[] = {
 	{
 		"http",
 		callback_http,
-		0,
-		0,
+		0, 0, 0, NULL, 0
 	},
-	{ NULL, NULL, 0, 0 }
+	LWS_PROTOCOL_LIST_TERM
 };
 
 static void

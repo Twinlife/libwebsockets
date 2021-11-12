@@ -98,12 +98,12 @@ callback_sse(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 		 * own private data and timer.
 		 */
 
-		p += lws_snprintf((char *)p, end - p,
+		p += lws_snprintf((char *)p, lws_ptr_diff_size_t(end, p),
 				  "data: %llu\x0d\x0a\x0d\x0a",
-				  (unsigned long long)time(NULL) -
-				  pss->established);
+				  (unsigned long long)(time(NULL) -
+				  pss->established));
 
-		if (lws_write(wsi, (uint8_t *)start, lws_ptr_diff(p, start),
+		if (lws_write(wsi, (uint8_t *)start, lws_ptr_diff_size_t(p, start),
 			      LWS_WRITE_HTTP) != lws_ptr_diff(p, start))
 			return 1;
 
@@ -126,9 +126,9 @@ callback_sse(struct lws *wsi, enum lws_callback_reasons reason, void *user,
 }
 
 static struct lws_protocols protocols[] = {
-	{ "http", lws_callback_http_dummy, 0, 0 },
-	{ "sse", callback_sse, sizeof(struct pss), 0 },
-	{ NULL, NULL, 0, 0 } /* terminator */
+	{ "http", lws_callback_http_dummy, 0, 0, 0, NULL, 0 },
+	{ "sse", callback_sse, sizeof(struct pss), 0, 0, NULL, 0 },
+	LWS_PROTOCOL_LIST_TERM
 };
 
 /* override the default mount for /sse in the URL space */

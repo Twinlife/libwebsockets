@@ -87,7 +87,7 @@ typedef struct t2_config {
 	const char				*arg1;
 	const char				*ssid;
 	unsigned int				frequency;
-	unsigned long				arg2;
+	unsigned long long			arg2;
 	unsigned int				priority;
 } t2_config_t;
 
@@ -141,6 +141,7 @@ static const lws_struct_map_t lsm_schema[] = {
 static int
 t2_config_dump(struct lws_dll2 *d, void *user)
 {
+#if !defined(LWS_WITH_NO_LOGS)
 	t2_config_t *c = lws_container_of(d, t2_config_t, list);
 
 	lwsl_notice("%s:   id1 '%s'\n", __func__, c->id1);
@@ -148,11 +149,12 @@ t2_config_dump(struct lws_dll2 *d, void *user)
 	lwsl_notice("%s:   ssid '%s'\n", __func__, c->ssid);
 
 	lwsl_notice("%s:   freq %d\n", __func__, c->frequency);
-	lwsl_notice("%s:   arg2 %lu\n", __func__, c->arg2);
+	lwsl_notice("%s:   arg2 %llu\n", __func__, c->arg2);
 	lwsl_notice("%s:   priority %d\n", __func__, c->priority);
 
 	lwsl_notice("%s:      key1: %s, key2: %s\n", __func__,
 			     c->creds->key1, c->creds->key2);
+#endif
 
 	return 0;
 }
@@ -215,7 +217,7 @@ test2(void)
 	}
 
 	do {
-		n = lws_struct_json_serialize(ser, buf, sizeof(buf), &written);
+		n = (int)lws_struct_json_serialize(ser, buf, sizeof(buf), &written);
 		switch (n) {
 		case LSJS_RESULT_FINISH:
 			puts((const char *)buf);

@@ -137,8 +137,8 @@ do_retry:
 }
 
 static const struct lws_protocols protocols[] = {
-	{ "lws-minimal-client", callback_minimal, 0, 0, },
-	{ NULL, NULL, 0, 0 }
+	{ "lws-minimal-client", callback_minimal, 0, 0, 0, NULL, 0 },
+	LWS_PROTOCOL_LIST_TERM
 };
 
 static void
@@ -179,6 +179,9 @@ int main(int argc, const char **argv)
 
 	if ((p = lws_cmdline_option(argc, argv, "-p")))
 		port = atoi(p);
+
+	if (lws_cmdline_option(argc, argv, "-n"))
+		ssl_connection &= ~LCCSCF_USE_SSL;
 
 	if (lws_cmdline_option(argc, argv, "-j"))
 		ssl_connection |= LCCSCF_ALLOW_SELFSIGNED;
