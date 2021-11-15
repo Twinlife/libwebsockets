@@ -41,6 +41,8 @@ class ObserverJni {
 
   void OnClose(jlong session_id, jlong websocket_id);
 
+  jlong OnTimer(jlong session_id, jlong websocket_id);
+
   bool OnVerify(jlong session_id, jlong websocket_id, const char* common_name, void* bytes, size_t length);
 
  private:  
@@ -51,6 +53,7 @@ class ObserverJni {
   const jmethodID j_on_writable_;  
   const jmethodID j_on_message_;
   const jmethodID j_on_close_;
+  const jmethodID j_on_timer_;
   const jmethodID j_on_verify_;
 };
 

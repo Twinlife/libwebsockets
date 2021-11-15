@@ -86,7 +86,7 @@ Container::Container(ObserverJni* observer) {
 
   observer_ = observer;
   
-  lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE, emit_log);
+  lws_set_log_level(LLL_ERR | LLL_WARN, emit_log);
   
   memset(&info_, 0, sizeof(info_));
   info_.port = CONTEXT_PORT_NO_LISTEN;
@@ -99,7 +99,7 @@ Container::Container(ObserverJni* observer) {
   info_.ka_probes = TCP_KEEP_ALIVE_PROBES;
   info_.ka_interval = TCP_KEEP_ALIVE_INTERVAL;
   info_.connect_timeout_secs = 10;
-  info_.timeout_secs = 3;
+  info_.timeout_secs = 10;
   info_.ssl_client_options_set = SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2;
   info_.client_ssl_cipher_list = "EDH+aRSA+AES256:EECDH+aRSA+AES256:!SSLv3";
 
@@ -312,6 +312,10 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
   case LWS_CALLBACK_CLIENT_CLOSED:
   case LWS_CALLBACK_CLOSED:
     observer_->OnClose(session_id, websocket_id);
+    break;
+
+  case LWS_CALLBACK_TIMER:
+    lws_set_timer_usecs(wsi, observer_->OnTimer(session_id, websocket_id));
     break;
 
   case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:

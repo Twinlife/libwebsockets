@@ -29,6 +29,7 @@ ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
     j_on_writable_(GetMethodID(jni, *j_observer_class_, "onWritable", "(JJ)Z")),
     j_on_message_(GetMethodID(jni, *j_observer_class_, "onMessage", "(JJLjava/nio/ByteBuffer;Z)V")),
     j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(JJ)V")),
+    j_on_timer_(GetMethodID(jni, *j_observer_class_, "onTimer", "(JJ)J")),
     j_on_verify_(GetMethodID(jni, *j_observer_class_, "onVerify", "(JJLjava/lang/String;[B)Z")) {
 }
 
@@ -87,6 +88,15 @@ void ObserverJni::OnClose(jlong session_id, jlong websocket_id) {
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
+jlong ObserverJni::OnTimer(jlong session_id, jlong websocket_id) {
+
+  JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
+  ScopedLocalRefFrame local_ref_frame(env);
+  jlong timeout = env->CallLongMethod(*j_observer_global_, j_on_timer_, session_id, websocket_id);
+  CHECK_EXCEPTION(env) << "error during CallLongMethod";
+  return timeout;
+}
+
 bool ObserverJni::OnVerify(jlong session_id, jlong websocket_id, const char* common_name, void* bytes, size_t length) {
 
   JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
@@ -96,7 +106,7 @@ bool ObserverJni::OnVerify(jlong session_id, jlong websocket_id, const char* com
   jbyteArray j_bytes = env->NewByteArray(length);
   env->SetByteArrayRegion(j_bytes, 0, length, (const jbyte*)bytes);
   bool verify = env->CallBooleanMethod(*j_observer_global_, j_on_verify_, session_id, websocket_id, j_common_name, j_bytes);
-  CHECK_EXCEPTION(env) << "error during CallVoidMethod";
+  CHECK_EXCEPTION(env) << "error during CallBooleanMethod";
   return verify;
 }
   
