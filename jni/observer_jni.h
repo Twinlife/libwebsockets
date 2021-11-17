@@ -32,7 +32,7 @@ class ObserverJni {
 
   void OnConnect(jlong session_id, jlong websocket_id, const char* ip, const jlong *stats, jsize stats_length);
 
-  void OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length,
+  jlong OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length,
                       const jlong *stats, jsize stats_length);
   
   bool OnWritable(jlong session_id, jlong websocket_id);

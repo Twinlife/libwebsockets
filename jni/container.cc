@@ -114,7 +114,7 @@ Container::~Container() {
   pthread_mutex_destroy(&jni_lws_list_mutex_);
 }  
 
-jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, const char* path, bool secure,
+jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, const char* path, bool secure, long timeout,
 				 const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password, const char* proxy_path) {
 
   if (context_) {
@@ -175,6 +175,9 @@ jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, c
 
     struct lws *wsi = lws_client_connect_via_info(&info_ws);
     if (wsi) {
+      insert(wsi);
+      // Set initial timer for this new websocket (Java timeout in milliseconds).
+      lws_set_timer_usecs(wsi, timeout * 1000L);
       return webrtc::jni::jlongFromPointer(wsi);
     }
     return 0;
@@ -198,6 +201,47 @@ void Container::TriggerWorker() {
   }
 }
 
+void Container::insert(struct lws* wsi)
+{
+  pthread_mutex_lock(&jni_lws_list_mutex_);
+  struct lws* current_wsi = jni_lws_list_;
+  while (current_wsi) {
+    if (current_wsi == wsi) {
+      wsi = 0;
+      break;
+    }
+    current_wsi = current_wsi->jni_lws_list;
+  }
+  if (wsi) {
+    wsi->jni_lws_list = jni_lws_list_;
+    jni_lws_list_ = wsi;
+  }
+  pthread_mutex_unlock(&jni_lws_list_mutex_);
+}
+
+bool Container::destroy(struct lws *wsi)
+{
+  bool found = false;
+  pthread_mutex_lock(&jni_lws_list_mutex_);
+  struct lws* current_wsi = jni_lws_list_;
+  struct lws* previous_wsi = NULL;
+  while (current_wsi) {
+    if (current_wsi == wsi) {
+      if (previous_wsi) {
+        previous_wsi->jni_lws_list = current_wsi->jni_lws_list;
+      } else {
+        jni_lws_list_ = current_wsi->jni_lws_list;
+      }
+      found = true;
+      break;
+    }
+    previous_wsi = current_wsi;
+    current_wsi = current_wsi->jni_lws_list;
+  }
+  pthread_mutex_unlock(&jni_lws_list_mutex_);
+  return found;
+}   
+
 void Container::TriggerWritable(jlong websocket_id) {
 
   if (context_) {
@@ -216,6 +260,16 @@ void Container::TriggerWritable(jlong websocket_id) {
       current_wsi = current_wsi->jni_lws_list;
     }
     pthread_mutex_unlock(&jni_lws_list_mutex_);
+  }
+}  
+
+void Container::Close(jlong websocket_id) {
+
+  if (context_) {
+    struct lws* wsi = reinterpret_cast<struct lws*>(websocket_id);
+    if (destroy(wsi)) {
+      lws_set_timeout(wsi, PENDING_TIMEOUT_AWAITING_PROXY_RESPONSE, LWS_TO_KILL_SYNC);
+    }
   }
 }  
 
@@ -256,50 +310,51 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 
   switch(reason) {
 
-  case LWS_CALLBACK_CLIENT_ESTABLISHED:
-       {
-          struct lws_conmon cm;
-          jlong stats[5];
-          char ip_addr[INET6_ADDRSTRLEN];
+  case LWS_CALLBACK_CLIENT_ESTABLISHED: {
+     struct lws_conmon cm;
+     jlong stats[5];
+     char ip_addr[INET6_ADDRSTRLEN];
 
-          lws_conmon_wsi_take(wsi, &cm);
+     lws_conmon_wsi_take(wsi, &cm);
  
-          stats[0] = cm.dns_disposition;
-          stats[1] = cm.ciu_dns;
-          stats[2] = cm.ciu_sockconn;
-          stats[3] = cm.ciu_tls;
-          stats[4] = cm.ciu_txn_resp;
+     stats[0] = cm.dns_disposition;
+     stats[1] = cm.ciu_dns;
+     stats[2] = cm.ciu_sockconn;
+     stats[3] = cm.ciu_tls;
+     stats[4] = cm.ciu_txn_resp;
 
-          lws_sa46_write_numeric_address(&cm.peer46, ip_addr, sizeof(ip_addr));
+     lws_sa46_write_numeric_address(&cm.peer46, ip_addr, sizeof(ip_addr));
 
-          lwsl_debug("DNS: %u Connect: %u TLS: %u TXN: %u to %s\n",
-                     cm.ciu_dns, cm.ciu_sockconn, cm.ciu_tls, cm.ciu_txn_resp, ip_addr);
-          lws_conmon_release(&cm);
+     lwsl_debug("DNS: %u Connect: %u TLS: %u TXN: %u to %s\n",
+                cm.ciu_dns, cm.ciu_sockconn, cm.ciu_tls, cm.ciu_txn_resp, ip_addr);
+     lws_conmon_release(&cm);
 
-          observer_->OnConnect(session_id, websocket_id, ip_addr, stats, 5);
-       }
-     
+     observer_->OnConnect(session_id, websocket_id, ip_addr, stats, 5);
+  }
     break;
 
-  case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
-       {
-          struct lws_conmon cm;
-          jlong stats[5];
+  case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
+     struct lws_conmon cm;
+     jlong stats[5];
 
-          lws_conmon_wsi_take(wsi, &cm);
+     lws_conmon_wsi_take(wsi, &cm);
 
-          stats[0] = cm.dns_disposition;
-          stats[1] = cm.ciu_dns;
-          stats[2] = cm.ciu_sockconn;
-          stats[3] = cm.ciu_tls;
-          stats[4] = cm.ciu_txn_resp;
+     stats[0] = cm.dns_disposition;
+     stats[1] = cm.ciu_dns;
+     stats[2] = cm.ciu_sockconn;
+     stats[3] = cm.ciu_tls;
+     stats[4] = cm.ciu_txn_resp;
 
-          lwsl_debug("DNS: %u Connect: %u TLS: %u TXN: %u\n",
-                     cm.ciu_dns, cm.ciu_sockconn, cm.ciu_tls, cm.ciu_txn_resp);
-          lws_conmon_release(&cm);
+     lwsl_debug("DNS: %u Connect: %u TLS: %u TXN: %u\n",
+                cm.ciu_dns, cm.ciu_sockconn, cm.ciu_tls, cm.ciu_txn_resp);
+     lws_conmon_release(&cm);
 
-          observer_->OnConnectError(session_id, websocket_id, (const char *)in, len, stats, 5);
-       }
+     jlong timeout = observer_->OnConnectError(session_id, websocket_id, (const char *)in, len, stats, 5);
+     if (timeout >= 0) {
+        timeout *= 1000L;
+        lws_set_timer_usecs(wsi, timeout);
+     }
+  }
     break;
 
   case LWS_CALLBACK_CLIENT_WRITEABLE:
@@ -314,8 +369,14 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
     observer_->OnClose(session_id, websocket_id);
     break;
 
-  case LWS_CALLBACK_TIMER:
-    lws_set_timer_usecs(wsi, observer_->OnTimer(session_id, websocket_id));
+  case LWS_CALLBACK_TIMER: {
+     jlong timeout = observer_->OnTimer(session_id, websocket_id);
+     if (timeout >= 0) {
+        timeout *= 1000L;
+        lwsl_debug("Timer callback on %lx new timeout %ld\n", session_id, timeout);
+        lws_set_timer_usecs(wsi, timeout);
+     }
+  }
     break;
 
   case LWS_CALLBACK_OPENSSL_PERFORM_SERVER_CERT_VERIFICATION:
@@ -366,10 +427,8 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 
   case LWS_CALLBACK_WSI_CREATE:
     lwsl_debug("%s: create wsi %p\n", __func__, wsi);
-    pthread_mutex_lock(&jni_lws_list_mutex_);
-    wsi->jni_lws_list = jni_lws_list_;
-    jni_lws_list_ = wsi;
-    pthread_mutex_unlock(&jni_lws_list_mutex_);
+
+    insert(wsi);
     break;
 
   case LWS_CALLBACK_WSI_DESTROY: {
@@ -379,22 +438,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
       wsi->a.vhost = NULL;
     }
 
-    pthread_mutex_lock(&jni_lws_list_mutex_);
-    struct lws* current_wsi = jni_lws_list_;
-    struct lws* previous_wsi = NULL;
-    while (current_wsi) {
-      if (current_wsi == wsi) {
-	if (previous_wsi) {
-	  previous_wsi->jni_lws_list = current_wsi->jni_lws_list;
-	} else {
-	  jni_lws_list_ = current_wsi->jni_lws_list;
-	}
-	break;
-      }
-      previous_wsi = current_wsi;
-      current_wsi = current_wsi->jni_lws_list;
-    }
-    pthread_mutex_unlock(&jni_lws_list_mutex_);
+    destroy(wsi);
     break;
   }
 

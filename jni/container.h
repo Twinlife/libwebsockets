@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2018 twinlife SA.
+ *  Copyright (c) 2018-2021 twinlife SA.
  *
  *  All Rights Reserved.
  *  
@@ -28,13 +28,15 @@ class Container {
   ~Container();
 
   jlong CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
-			bool secure, const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password, const char* proxy_path);
+			bool secure, long timeout, const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password, const char* proxy_path);
 
   void Service(int timeout);
 
   void TriggerWorker();
 
   void TriggerWritable(jlong websocket_id);
+
+  void Close(jlong websocket_id);
   
   void SendMessage(jlong websocket_id, void* buffer, size_t length, bool binary);
 
@@ -50,6 +52,8 @@ class Container {
   struct lws *jni_lws_list_;
 
   struct lws *get_lws_from_websocket_id(jlong websocket_id);
+  void insert(struct lws* wsi);
+  bool destroy(struct lws* wsi);
 };
 
 }  // namespace jni

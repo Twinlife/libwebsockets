@@ -25,7 +25,7 @@ ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
   : j_observer_global_(jni, j_observer),
     j_observer_class_(jni, GetObjectClass(jni, *j_observer_global_)),
     j_on_connect_(GetMethodID(jni, *j_observer_class_, "onConnect", "(JJLjava/lang/String;[J)V")),
-    j_on_connect_error_(GetMethodID(jni, *j_observer_class_, "onConnectError", "(JJLjava/lang/String;[J)V")),
+    j_on_connect_error_(GetMethodID(jni, *j_observer_class_, "onConnectError", "(JJLjava/lang/String;[J)J")),
     j_on_writable_(GetMethodID(jni, *j_observer_class_, "onWritable", "(JJ)Z")),
     j_on_message_(GetMethodID(jni, *j_observer_class_, "onMessage", "(JJLjava/nio/ByteBuffer;Z)V")),
     j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(JJ)V")),
@@ -47,7 +47,7 @@ void ObserverJni::OnConnect(jlong session_id, jlong websocket_id, const char* ip
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length,
+jlong ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length,
                                  const jlong* stats, jsize stats_length) {
 
   JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
@@ -58,8 +58,9 @@ void ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const cha
   }
   jlongArray j_stats = env->NewLongArray(stats_length);
   env->SetLongArrayRegion(j_stats, 0, stats_length, stats);
-  env->CallVoidMethod(*j_observer_global_, j_on_connect_error_, session_id, websocket_id, j_diagnostic, j_stats);
-  CHECK_EXCEPTION(env) << "error during CallVoidMethod";
+  jlong timeout = env->CallLongMethod(*j_observer_global_, j_on_connect_error_, session_id, websocket_id, j_diagnostic, j_stats);
+  CHECK_EXCEPTION(env) << "error during CallLongMethod";
+  return timeout;
 }
 
 bool ObserverJni::OnWritable(jlong session_id, jlong websocket_id) {
