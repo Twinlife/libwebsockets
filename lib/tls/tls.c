@@ -213,8 +213,9 @@ lws_tls_server_conn_alpn(struct lws *wsi)
 #else
 	lwsl_err("%s: openssl too old\n", __func__);
 #endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
-
-	return 0;
+	// --twinlife-- 211119
+	//return 0;
+	// --twinlife-- 211119
 }
 #endif
 

@@ -416,9 +416,10 @@ lws_create_context(const struct lws_context_creation_info *info)
 	char fatal_exit_defer = 0;
 #endif
 
-
-	if (lws_fi(&info->fic, "ctx_createfail1"))
-		goto early_bail;
+	// --twinlife-- 211119
+	//if (lws_fi(&info->fic, "ctx_createfail1"))
+	//	goto early_bail;
+	// --twinlife-- 211119
 
 	if (lpf) {
 		lpf+= 2;
@@ -1217,16 +1218,19 @@ lws_create_context(const struct lws_context_creation_info *info)
 		goto bail_libuv_aware;
 
 #if defined(LWS_WITH_NETWORK)
-
-	if (lws_fi(&context->fic, "ctx_createfail_evlib_init"))
-		goto bail_libuv_aware;
+	// --twinlife-- 211119
+	//if (lws_fi(&context->fic, "ctx_createfail_evlib_init"))
+	//	goto bail_libuv_aware;
+	// --twinlife-- 211119
 
 	if (context->event_loop_ops->init_context)
 		if (context->event_loop_ops->init_context(context, info))
 			goto bail_libuv_aware;
 
-	if (lws_fi(&context->fic, "ctx_createfail_evlib_pt"))
-		goto bail_libuv_aware;
+	// --twinlife-- 211119
+	//if (lws_fi(&context->fic, "ctx_createfail_evlib_pt"))
+	//	goto bail_libuv_aware;
+	// --twinlife-- 211119
 
 	if (context->event_loop_ops->init_pt)
 		for (n = 0; n < context->count_threads; n++) {

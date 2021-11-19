@@ -1004,10 +1004,12 @@ lws_create_vhost(struct lws_context *context,
 	}
 #if defined(LWS_WITH_SERVER)
 	lws_context_lock(context, __func__);
-	if (lws_fi(&vh->fic, "vh_create_srv_init"))
-		n = -1;
-	else
-		n = _lws_vhost_init_server(info, vh);
+	// --twinlife-- 211119
+	//if (lws_fi(&vh->fic, "vh_create_srv_init"))
+	//	n = -1;
+	//else
+	// --twinlife-- 211119
+	n = _lws_vhost_init_server(info, vh);
 	lws_context_unlock(context);
 	if (n < 0) {
 		lwsl_vhost_err(vh, "init server failed\n");

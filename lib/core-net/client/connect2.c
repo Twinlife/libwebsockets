@@ -206,17 +206,19 @@ lws_client_connect_2_dnsreq(struct lws *wsi)
 		break;
 	case ACTIVE_CONNS_MUXED:
 		lwsl_wsi_notice(wsi, "ACTIVE_CONNS_MUXED");
-		if (lwsi_role_h2(wsi)) {
-
-			if (wsi->a.protocol->callback(wsi,
-					LWS_CALLBACK_ESTABLISHED_CLIENT_HTTP,
-					wsi->user_space, NULL, 0))
-				goto failed1;
-
-			//lwsi_set_state(wsi, LRS_H1C_ISSUE_HANDSHAKE2);
-			//lwsi_set_state(w, LRS_ESTABLISHED);
-			lws_callback_on_writable(wsi);
-		}
+		// --twinlife-- 211119
+		//if (lwsi_role_h2(wsi)) {
+		//
+		//	if (wsi->a.protocol->callback(wsi,
+		//			LWS_CALLBACK_ESTABLISHED_CLIENT_HTTP,
+		//			wsi->user_space, NULL, 0))
+		//		goto failed1;
+		//
+		//	//lwsi_set_state(wsi, LRS_H1C_ISSUE_HANDSHAKE2);
+		//	//lwsi_set_state(w, LRS_ESTABLISHED);
+		//	lws_callback_on_writable(wsi);
+		//}
+		// --twinlife-- 211119
 
 		return wsi;
 	case ACTIVE_CONNS_QUEUED:

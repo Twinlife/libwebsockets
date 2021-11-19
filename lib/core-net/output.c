@@ -98,11 +98,12 @@ lws_issue_raw(struct lws *wsi, unsigned char *buf, size_t len)
 		n = (unsigned int)len;
 
 	/* nope, send it on the socket directly */
-
-	if (lws_fi(&wsi->fic, "sendfail"))
-		m = (unsigned int)LWS_SSL_CAPABLE_ERROR;
-	else
-		m = (unsigned int)lws_ssl_capable_write(wsi, buf, n);
+	// --twinlife-- 211119
+	//if (lws_fi(&wsi->fic, "sendfail"))
+	//	m = (unsigned int)LWS_SSL_CAPABLE_ERROR;
+	//else
+	// --twinlife-- 211119
+	m = (unsigned int)lws_ssl_capable_write(wsi, buf, n);
 
 	lwsl_wsi_info(wsi, "ssl_capable_write (%d) says %d", n, m);
 
