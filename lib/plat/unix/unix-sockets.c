@@ -236,7 +236,8 @@ lws_plat_set_socket_options_ip(lws_sockfd_type fd, uint8_t pri, int lws_flags)
       !defined(__OpenBSD__) && \
       !defined(__sun) && \
       !defined(__HAIKU__) && \
-      !defined(__CYGWIN__)
+      !defined(__CYGWIN__) && \
+      !defined(__QNX__)
 
 	/* the BSDs don't have SO_PRIORITY */
 
@@ -371,7 +372,7 @@ lws_interface_to_sa(int ipv6, const char *ifname, struct sockaddr_in *addr,
 			break;
 #endif
 		default:
-			continue;
+			break;
 		}
 	}
 

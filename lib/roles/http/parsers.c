@@ -545,11 +545,6 @@ int lws_hdr_copy(struct lws *wsi, char *dst, int len,
 		return -1;
 
 	n = wsi->http.ah->frag_index[h];
-	if (h == WSI_TOKEN_HTTP_URI_ARGS)
-		lwsl_err("%s: WSI_TOKEN_HTTP_URI_ARGS start frag %d\n",
-				__func__, n);
-
-
 	if (!n)
 		return 0;
 	do {
@@ -1597,7 +1592,7 @@ lws_http_cookie_get(struct lws *wsi, const char *name, char *buf,
 
 	p += bl;
 	n -= (int)bl;
-	while (n-- > (int)bl) {
+	while (n-- > 0) {
 		if (*p == '=' && !memcmp(p - bl, name, (unsigned int)bl)) {
 			p++;
 			while (*p != ';' && n-- && max) {
