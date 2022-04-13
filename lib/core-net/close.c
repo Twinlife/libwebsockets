@@ -896,6 +896,18 @@ __lws_close_free_wsi_final(struct lws *wsi)
 		sanity_assert_no_sockfd_traces(wsi->a.context, wsi->desc.sockfd);
 	}
 
+	/* ... if we're closing the cancel pipe, account for it */
+
+	{
+		struct lws_context_per_thread *pt =
+				&wsi->a.context->pt[(int)wsi->tsi];
+
+		if (pt->pipe_wsi == wsi)
+			pt->pipe_wsi = NULL;
+		if (pt->dummy_pipe_fds[0] == wsi->desc.sockfd)
+			pt->dummy_pipe_fds[0] = LWS_SOCK_INVALID;
+	}
+
 	wsi->desc.sockfd = LWS_SOCK_INVALID;
 
 #if defined(LWS_WITH_CLIENT)
@@ -944,7 +956,7 @@ __lws_close_free_wsi_final(struct lws *wsi)
 		//_lws_header_table_reset(wsi->http.ah);
 
 #if defined(LWS_WITH_TLS)
-		wsi->tls.use_ssl = wsi->flags & LCCSCF_USE_SSL;
+		wsi->tls.use_ssl = (unsigned int)wsi->flags;
 #endif
 
 #if defined(LWS_WITH_TLS_JIT_TRUST)

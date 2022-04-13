@@ -122,7 +122,7 @@ __lws_adopt_descriptor_vhost1(struct lws_vhost *vh, lws_adoption_type type,
 			    const char *vh_prot_name, struct lws *parent,
 			    void *opaque, const char *fi_wsi_name)
 {
-	struct lws_context *context = vh->context;
+	struct lws_context *context;
 	struct lws_context_per_thread *pt;
 	struct lws *new_wsi;
 	int n;
@@ -132,6 +132,11 @@ __lws_adopt_descriptor_vhost1(struct lws_vhost *vh, lws_adoption_type type,
 	 * entirely different pt / tsi for load balancing.  In that case as
 	 * we initialize it, it may become "live" concurrently unexpectedly...
 	 */
+
+	if (!vh)
+		return NULL;
+
+	context = vh->context;
 
 	lws_context_assert_lock_held(vh->context);
 
@@ -842,12 +847,16 @@ lws_create_adopt_udp(struct lws_vhost *vhost, const char *ads, int port,
 		lws_snprintf(buf, sizeof(buf), "%u", port);
 		n = getaddrinfo(ads, buf, &h, &r);
 		if (n) {
+
+#if (_LWS_ENABLED_LOGS & LLL_INFO)
 #if !defined(LWS_PLAT_FREERTOS)
 			lwsl_info("%s: getaddrinfo error: %s\n", __func__,
 				  gai_strerror(n));
 #else
+
 			lwsl_info("%s: getaddrinfo error: %s\n", __func__,
 					strerror(n));
+#endif
 #endif
 			//freeaddrinfo(r);
 			goto bail1;

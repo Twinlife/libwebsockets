@@ -1248,10 +1248,12 @@ int
 lws_http_proxy_start(struct lws *wsi, const struct lws_http_mount *hit,
 		     char *uri_ptr, char ws)
 {
-	char ads[96], rpath[256], host[96], *pcolon, *pslash, unix_skt = 0;
+	char ads[96], host[96], *pcolon, *pslash, unix_skt = 0;
 	struct lws_client_connect_info i;
 	struct lws *cwsi;
 	int n, na;
+	unsigned int max_http_header_data = wsi->a.context->max_http_header_data > 256 ? wsi->a.context->max_http_header_data : 256;
+	char rpath[max_http_header_data];
 
 #if defined(LWS_ROLE_WS)
 	if (ws)
@@ -1318,7 +1320,7 @@ lws_http_proxy_start(struct lws *wsi, const struct lws_http_mount *hit,
 	if (pcolon)
 		i.port = atoi(pcolon + 1);
 
-	n = lws_snprintf(rpath, sizeof(rpath) - 1, "/%s/%s",
+	n = lws_snprintf(rpath, max_http_header_data - 1, "/%s/%s",
 			 pslash + 1, uri_ptr + hit->mountpoint_len) - 1;
 	lws_clean_url(rpath);
 	n = (int)strlen(rpath);
@@ -1335,7 +1337,7 @@ lws_http_proxy_start(struct lws *wsi, const struct lws_http_mount *hit,
 
 		p = rpath + n;
 
-		if (na >= (int)sizeof(rpath) - n - 2) {
+		if (na >= (int)max_http_header_data - n - 2) {
 			lwsl_info("%s: query string %d longer "
 				  "than we can handle\n", __func__,
 				  na);
@@ -1345,7 +1347,7 @@ lws_http_proxy_start(struct lws *wsi, const struct lws_http_mount *hit,
 
 		*p++ = '?';
 		budg = lws_hdr_copy(wsi, p,
-			     (int)(&rpath[sizeof(rpath) - 1] - p),
+			     (int)(&rpath[max_http_header_data - 1] - p),
 			     WSI_TOKEN_HTTP_URI_ARGS);
 	       if (budg > 0)
 		       p += budg;
@@ -1393,6 +1395,36 @@ lws_http_proxy_start(struct lws *wsi, const struct lws_http_mount *hit,
 #endif
 		)
 			i.method = "POST";
+		else if (lws_hdr_simple_ptr(wsi, WSI_TOKEN_PUT_URI)
+#if defined(LWS_WITH_HTTP2)
+								|| (
+			lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COLON_METHOD) &&
+			!strcmp(lws_hdr_simple_ptr(wsi,
+					WSI_TOKEN_HTTP_COLON_METHOD), "put")
+			)
+#endif
+		)
+			i.method = "PUT";
+		else if (lws_hdr_simple_ptr(wsi, WSI_TOKEN_PATCH_URI)
+#if defined(LWS_WITH_HTTP2)
+								|| (
+			lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COLON_METHOD) &&
+			!strcmp(lws_hdr_simple_ptr(wsi,
+					WSI_TOKEN_HTTP_COLON_METHOD), "patch")
+			)
+#endif
+		)
+			i.method = "PATCH";
+		else if (lws_hdr_simple_ptr(wsi, WSI_TOKEN_DELETE_URI)
+#if defined(LWS_WITH_HTTP2)
+								|| (
+			lws_hdr_simple_ptr(wsi, WSI_TOKEN_HTTP_COLON_METHOD) &&
+			!strcmp(lws_hdr_simple_ptr(wsi,
+					WSI_TOKEN_HTTP_COLON_METHOD), "delete")
+			)
+#endif
+		)
+			i.method = "DELETE";
 		else
 			i.method = "GET";
 	}
@@ -2437,8 +2469,9 @@ upgrade_h2c:
 
 		lws_h2_settings(wsi, &wsi->h2.h2n->peer_set, (uint8_t *)tbuf, n);
 
-		lws_hpack_dynamic_size(wsi, (int)wsi->h2.h2n->peer_set.s[
-		                                      H2SET_HEADER_TABLE_SIZE]);
+		if (lws_hpack_dynamic_size(wsi, (int)wsi->h2.h2n->peer_set.s[
+		                                      H2SET_HEADER_TABLE_SIZE]))
+			return 1;
 
 		strcpy(tbuf, "HTTP/1.1 101 Switching Protocols\x0d\x0a"
 			      "Connection: Upgrade\x0d\x0a"
