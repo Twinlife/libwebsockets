@@ -136,6 +136,7 @@ const uint32_t ss_state_txn_validity[] = {
 
 	[LWSSSCS_POLL]			= (1 << LWSSSCS_CONNECTING) |
 					  (1 << LWSSSCS_TIMEOUT) |
+					  (1 << LWSSSCS_ALL_RETRIES_FAILED) |
 					  (1 << LWSSSCS_DESTROYING),
 
 	[LWSSSCS_ALL_RETRIES_FAILED]	= (1 << LWSSSCS_CONNECTING) |
@@ -146,11 +147,16 @@ const uint32_t ss_state_txn_validity[] = {
 					  (1 << LWSSSCS_TIMEOUT) |
 #if defined(LWS_ROLE_MQTT)
 					  (1 << LWSSSCS_QOS_ACK_REMOTE) |
+					  (1 << LWSSSCS_QOS_NACK_REMOTE) |
 #endif
 					  (1 << LWSSSCS_DESTROYING),
 
 	[LWSSSCS_QOS_NACK_REMOTE]	= (1 << LWSSSCS_DISCONNECTED) |
 					  (1 << LWSSSCS_TIMEOUT) |
+#if defined(LWS_ROLE_MQTT)
+					  (1 << LWSSSCS_QOS_ACK_REMOTE) |
+					  (1 << LWSSSCS_QOS_NACK_REMOTE) |
+#endif
 					  (1 << LWSSSCS_DESTROYING),
 
 	[LWSSSCS_QOS_ACK_LOCAL]		= (1 << LWSSSCS_DISCONNECTED) |
@@ -1617,9 +1623,12 @@ _lws_ss_request_tx(lws_ss_handle_t *h)
 		return LWSSSSRET_OK;
 
 	h->seqstate = SSSEQ_TRY_CONNECT;
-	r = lws_ss_event_helper(h, LWSSSCS_POLL);
-	if (r)
-		return r;
+	if (h->prev_ss_state != LWSSSCS_POLL) { /* possible if we were created
+						 * before we could action it */
+		r = lws_ss_event_helper(h, LWSSSCS_POLL);
+		if (r)
+			return r;
+	}
 
 	/*
 	 * Retries operate via lws_ss_request_tx(), explicitly ask for a

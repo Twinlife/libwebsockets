@@ -38,25 +38,30 @@ void
 _lws_routing_entry_dump(struct lws_context *cx, lws_route_t *rou)
 {
 	char sa[48], fin[192], *end = &fin[sizeof(fin)];
+	char *it = fin;
+	int n;
 
 	fin[0] = '\0';
 
 	if (rou->dest.sa4.sin_family) {
 		lws_sa46_write_numeric_address(&rou->dest, sa, sizeof(sa));
-		lws_snprintf(fin, lws_ptr_diff_size_t(end, fin),
+		n = lws_snprintf(it, lws_ptr_diff_size_t(end, it),
 				  "dst: %s/%d, ", sa, rou->dest_len);
+		it = it + n;
 	}
 
 	if (rou->src.sa4.sin_family) {
 		lws_sa46_write_numeric_address(&rou->src, sa, sizeof(sa));
-		lws_snprintf(fin, lws_ptr_diff_size_t(end, fin),
+		n = lws_snprintf(it, lws_ptr_diff_size_t(end, it),
 				  "src: %s/%d, ", sa, rou->src_len);
+		it = it + n;
 	}
 
 	if (rou->gateway.sa4.sin_family) {
 		lws_sa46_write_numeric_address(&rou->gateway, sa, sizeof(sa));
-		lws_snprintf(fin, lws_ptr_diff_size_t(end, fin),
+		n = lws_snprintf(it, lws_ptr_diff_size_t(end, it),
 				  "gw: %s, ", sa);
+		it = it + n;
 	}
 
 	lwsl_cx_info(cx, " %s ifidx: %d, pri: %d, proto: %d\n", fin,
@@ -98,7 +103,7 @@ _lws_routing_table_dump(struct lws_context *cx)
 lws_route_uidx_t
 _lws_route_get_uidx(struct lws_context *cx)
 {
-	uint8_t ou;
+	lws_route_uidx_t ou;
 
 	if (!cx->route_uidx)
 		cx->route_uidx++;
@@ -141,7 +146,7 @@ _lws_route_remove(struct lws_context_per_thread *pt, lws_route_t *robj, int flag
 		lws_route_t *rou = lws_container_of(d, lws_route_t, list);
 
 		if ((!(flags & LRR_MATCH_SRC) || !lws_sa46_compare_ads(&robj->src, &rou->src)) &&
-		    ((flags & LRR_MATCH_SRC) || !lws_sa46_compare_ads(&robj->dest, &rou->dest)) &&
+		    (!(flags & LRR_MATCH_DST) || !lws_sa46_compare_ads(&robj->dest, &rou->dest)) &&
 		    (!robj->gateway.sa4.sin_family ||
 		     !lws_sa46_compare_ads(&robj->gateway, &rou->gateway)) &&
 		    robj->dest_len <= rou->dest_len &&
@@ -149,8 +154,6 @@ _lws_route_remove(struct lws_context_per_thread *pt, lws_route_t *robj, int flag
 		    ((flags & LRR_IGNORE_PRI) ||
 		      robj->priority == rou->priority)
 		    ) {
-			if (flags & LRR_JUST_CHECK)
-				return rou;
 			lwsl_cx_info(pt->context, "deleting route");
 			_lws_route_pt_close_route_users(pt, robj->uidx);
 			lws_dll2_remove(&rou->list);

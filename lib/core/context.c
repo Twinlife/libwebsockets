@@ -609,6 +609,12 @@ lws_create_context(const struct lws_context_creation_info *info)
 		goto early_bail;
 	}
 
+#if defined(LWS_WITH_SYS_STATE)
+   // NOTE: we need to init this fields because they may be used in logger when context destroying
+	context->mgr_system.state_names = system_state_names;
+	context->mgr_system.context = context;
+#endif
+
 #if defined(LWS_WITH_NETWORK)
 	context->event_loop_ops = plev->ops;
 	context->us_wait_resolution = us_wait_resolution;
@@ -1340,11 +1346,9 @@ lws_create_context(const struct lws_context_creation_info *info)
 	 * init the lws_state mgr for the system state
 	 */
 
-	context->mgr_system.state_names		= system_state_names;
 	context->mgr_system.name		= "system";
 	context->mgr_system.state		= LWS_SYSTATE_CONTEXT_CREATED;
 	context->mgr_system.parent		= context;
-	context->mgr_system.context		= context;
 #if defined(LWS_WITH_SYS_SMD)
 	context->mgr_system.smd_class		= LWSSMDCL_SYSTEM_STATE;
 #endif
@@ -2009,15 +2013,18 @@ next:
 		lws_plat_context_late_destroy(context);
 
 #if defined(LWS_WITH_PEER_LIMITS)
-		for (nu = 0; nu < context->pl_hash_elements; nu++)	{
-			lws_start_foreach_llp(struct lws_peer **, peer,
-					      context->pl_hash_table[nu]) {
-				struct lws_peer *df = *peer;
-				*peer = df->next;
-				lws_free(df);
-				continue;
-			} lws_end_foreach_llp(peer, next);
-		}
+		if (context->pl_hash_table)
+			for (nu = 0; nu < context->pl_hash_elements; nu++)	{
+				if (!context->pl_hash_table[nu])
+					continue;
+				lws_start_foreach_llp(struct lws_peer **, peer,
+						      context->pl_hash_table[nu]) {
+					struct lws_peer *df = *peer;
+					*peer = df->next;
+					lws_free(df);
+					continue;
+				} lws_end_foreach_llp(peer, next);
+			}
 		lws_free(context->pl_hash_table);
 #endif
 

@@ -198,7 +198,7 @@ static const int ip_opt_lws_flags[] = {
 #endif
 }, ip_opt_val[] = {
 	IPTOS_LOWDELAY, IPTOS_THROUGHPUT, IPTOS_RELIABILITY
-#if !defined(__OpenBSD__) && !defined(__sun)
+#if !defined(__OpenBSD__) && !defined(__sun) && !defined(__QNX__)
 	, IPTOS_MINCOST
 #endif
 };
@@ -216,7 +216,7 @@ lws_plat_set_socket_options_ip(lws_sockfd_type fd, uint8_t pri, int lws_flags)
 {
 	int optval = (int)pri, ret = 0, n;
 	socklen_t optlen = sizeof(optval);
-#if !defined(LWS_WITH_NO_LOGS)
+#if (_LWS_ENABLED_LOGS & LLL_WARN)
 	int en;
 #endif
 
@@ -244,7 +244,7 @@ lws_plat_set_socket_options_ip(lws_sockfd_type fd, uint8_t pri, int lws_flags)
 	if (pri) { /* 0 is the default already */
 		if (setsockopt(fd, SOL_SOCKET, SO_PRIORITY,
 				(const void *)&optval, optlen) < 0) {
-#if !defined(LWS_WITH_NO_LOGS)
+#if (_LWS_ENABLED_LOGS & LLL_WARN)
 			en = errno;
 			lwsl_warn("%s: unable to set socket pri %d: errno %d\n",
 				  __func__, (int)pri, en);
@@ -589,7 +589,7 @@ lws_plat_vhost_tls_client_ctx_init(struct lws_vhost *vhost)
 int
 lws_plat_mbedtls_net_send(void *ctx, const uint8_t *buf, size_t len)
 {
-	int fd = ((mbedtls_net_context *) ctx)->MBEDTLS_PRIVATE(fd);
+	int fd = ((mbedtls_net_context *) ctx)->MBEDTLS_PRIVATE_V30_ONLY(fd);
 	int ret;
 
 	if (fd < 0)
@@ -614,7 +614,7 @@ lws_plat_mbedtls_net_send(void *ctx, const uint8_t *buf, size_t len)
 int
 lws_plat_mbedtls_net_recv(void *ctx, unsigned char *buf, size_t len)
 {
-	int fd = ((mbedtls_net_context *) ctx)->MBEDTLS_PRIVATE(fd);
+	int fd = ((mbedtls_net_context *) ctx)->MBEDTLS_PRIVATE_V30_ONLY(fd);
 	int ret;
 
 	if (fd < 0)

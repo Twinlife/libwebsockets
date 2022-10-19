@@ -228,7 +228,10 @@ lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
 			return 1;
 		}
 
-		if (private_key) {
+		if (!private_key) {
+			lwsl_err("ssl private key not set\n");
+			return 1;
+		} else {
 			/* set the private key from KeyFile */
 			if (SSL_CTX_use_PrivateKey_file(vhost->tls.ssl_ctx, private_key,
 							SSL_FILETYPE_PEM) != 1) {
@@ -242,14 +245,6 @@ lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
 					       (char *)vhost->context->pt[0].serv_buf);
 				lwsl_err("ssl problem getting key '%s' %lu: %s\n",
 					 private_key, error, s);
-				return 1;
-			}
-		} else {
-			if (vhost->protocols[0].callback(wsi,
-				      LWS_CALLBACK_OPENSSL_CONTEXT_REQUIRES_PRIVATE_KEY,
-							 vhost->tls.ssl_ctx, NULL, 0)) {
-				lwsl_err("ssl private key not set\n");
-
 				return 1;
 			}
 		}
@@ -389,7 +384,10 @@ lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
 		return 1;
 	}
 
-	if (n != LWS_TLS_EXTANT_ALTERNATIVE && private_key) {
+	if (n == LWS_TLS_EXTANT_ALTERNATIVE || !private_key) {
+		lwsl_err("ssl private key not set\n");
+		return 1;
+	} else {
 		/* set the private key from KeyFile */
 		if (SSL_CTX_use_PrivateKey_file(vhost->tls.ssl_ctx, private_key,
 					        SSL_FILETYPE_PEM) != 1) {
@@ -398,14 +396,6 @@ lws_tls_server_certs_load(struct lws_vhost *vhost, struct lws *wsi,
 				 private_key, error,
 				 ERR_error_string(error,
 				      (char *)vhost->context->pt[0].serv_buf));
-			return 1;
-		}
-	} else {
-		if (vhost->protocols[0].callback(wsi,
-			      LWS_CALLBACK_OPENSSL_CONTEXT_REQUIRES_PRIVATE_KEY,
-						 vhost->tls.ssl_ctx, NULL, 0)) {
-			lwsl_err("ssl private key not set\n");
-
 			return 1;
 		}
 	}
@@ -579,8 +569,20 @@ lws_tls_server_vhost_backend_init(const struct lws_context_creation_info *info,
 			 __func__);
 	}
 
-	if (info->ssl_options_set)
-		SSL_CTX_set_options(vhost->tls.ssl_ctx,
+#if defined(USE_WOLFSSL)
+		long
+#else
+#if defined(LWS_WITH_BORINGSSL)
+		uint32_t
+#else
+#if (OPENSSL_VERSION_NUMBER >= 0x10003000l) && !defined(LIBRESSL_VERSION_NUMBER) /* not documented by openssl */
+		unsigned long
+#else
+		long
+#endif
+#endif
+#endif
+			ssl_options_set_value =
 #if defined(USE_WOLFSSL)
 				(long)
 #else
@@ -588,32 +590,50 @@ lws_tls_server_vhost_backend_init(const struct lws_context_creation_info *info,
 				(uint32_t)
 #else
 #if (OPENSSL_VERSION_NUMBER >= 0x10003000l) && !defined(LIBRESSL_VERSION_NUMBER) /* not documented by openssl */
-				    (unsigned long)
+				(unsigned long)
 #else
-				    (long)
+				(long)
 #endif
 #endif
 #endif
-				info->ssl_options_set);
+					info->ssl_options_set;
+
+	if (info->ssl_options_set)
+		SSL_CTX_set_options(vhost->tls.ssl_ctx, ssl_options_set_value);
+
+#if (OPENSSL_VERSION_NUMBER >= 0x009080df) && !defined(USE_WOLFSSL)
 
 /* SSL_clear_options introduced in 0.9.8m */
-#if (OPENSSL_VERSION_NUMBER >= 0x009080df) && !defined(USE_WOLFSSL)
-	if (info->ssl_options_clear)
-		SSL_CTX_clear_options(vhost->tls.ssl_ctx,
+#if defined(LWS_WITH_BORINGSSL)
+	uint32_t
+#else
+#if (OPENSSL_VERSION_NUMBER >= 0x10003000l)  && !defined(LIBRESSL_VERSION_NUMBER)/* not documented by openssl */
+	unsigned long
+#else
+	long
+#endif
+#endif
+
+	ssl_options_clear_value =
 #if defined(LWS_WITH_BORINGSSL)
 				(uint32_t)
 #else
 #if (OPENSSL_VERSION_NUMBER >= 0x10003000l)  && !defined(LIBRESSL_VERSION_NUMBER)/* not documented by openssl */
-				    (unsigned long)
+				(unsigned long)
 #else
-				    (long)
+				(long)
 #endif
 #endif
-				      info->ssl_options_clear);
-#endif
+					info->ssl_options_clear;
+
+	if (info->ssl_options_clear) {
+		SSL_CTX_clear_options(vhost->tls.ssl_ctx, ssl_options_clear_value);
+	}
 
 	lwsl_info(" SSL options 0x%lX\n",
 			(unsigned long)SSL_CTX_get_options(vhost->tls.ssl_ctx));
+#endif
+
 	if (!vhost->tls.use_ssl ||
 	    (!info->ssl_cert_filepath && !info->server_ssl_cert_mem))
 		return 0;

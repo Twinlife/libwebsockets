@@ -706,7 +706,7 @@ struct lws {
 
 	lws_log_cx_t			*log_cx;
 
-#if defined(LWS_WITH_THREADPOOL)
+#if defined(LWS_WITH_THREADPOOL) && defined(LWS_HAVE_PTHREAD_H)
 	lws_dll2_owner_t		tp_task_owner; /* struct lws_threadpool_task */
 #endif
 
@@ -1375,7 +1375,7 @@ _lws_routing_table_dump(struct lws_context *cx);
 
 #define LRR_IGNORE_PRI			(1 << 0)
 #define LRR_MATCH_SRC			(1 << 1)
-#define LRR_JUST_CHECK			(1 << 2)
+#define LRR_MATCH_DST			(1 << 2)
 
 lws_route_t *
 _lws_route_remove(struct lws_context_per_thread *pt, lws_route_t *robj, int flags);

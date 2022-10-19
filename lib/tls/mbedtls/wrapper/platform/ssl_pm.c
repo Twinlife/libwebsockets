@@ -98,7 +98,6 @@ static void ssl_platform_debug(void *ctx, int level,
 }
 //#endif
 
-#if defined(LWS_HAVE_mbedtls_ssl_set_verify)
 static int
 lws_mbedtls_f_vrfy(void *opaque, mbedtls_x509_crt *x509, int state, uint32_t *pflags)
 {
@@ -109,7 +108,6 @@ lws_mbedtls_f_vrfy(void *opaque, mbedtls_x509_crt *x509, int state, uint32_t *pf
 
 	return 0;
 }
-#endif
 
 /**
  * @brief create SSL low-level object
@@ -151,6 +149,8 @@ int ssl_pm_new(SSL *ssl)
 
 #if defined(LWS_HAVE_mbedtls_ssl_set_verify)
     mbedtls_ssl_set_verify(&ssl_pm->ssl, lws_mbedtls_f_vrfy, ssl_pm);
+#else
+    mbedtls_ssl_conf_verify(&ssl_pm->conf, lws_mbedtls_f_vrfy, ssl_pm);
 #endif
 
     ret = mbedtls_ctr_drbg_seed(&ssl_pm->ctr_drbg, mbedtls_entropy_func, &ssl_pm->entropy, pers, pers_len);
@@ -499,14 +499,13 @@ void ssl_pm_set_fd(SSL *ssl, int fd, int mode)
 {
     struct ssl_pm *ssl_pm = (struct ssl_pm *)ssl->ssl_pm;
 
-    ssl_pm->fd.MBEDTLS_PRIVATE(fd) = fd;
+    ssl_pm->fd.MBEDTLS_PRIVATE_V30_ONLY(fd) = fd;
 }
 
 int ssl_pm_get_fd(const SSL *ssl, int mode)
 {
     struct ssl_pm *ssl_pm = (struct ssl_pm *)ssl->ssl_pm;
-
-    return ssl_pm->fd.MBEDTLS_PRIVATE(fd);
+    return ssl_pm->fd.MBEDTLS_PRIVATE_V30_ONLY(fd);
 }
 
 OSSL_HANDSHAKE_STATE ssl_pm_get_state(const SSL *ssl)
@@ -660,7 +659,7 @@ int x509_pm_load(X509 *x, const unsigned char *buffer, int len)
     struct x509_pm *x509_pm = (struct x509_pm *)x->x509_pm;
 
     if (!x509_pm->x509_crt) {
-        x509_pm->x509_crt = ssl_mem_malloc(sizeof(mbedtls_x509_crt));
+        x509_pm->x509_crt = ssl_mem_malloc(sizeof(mbedtls_x509_crt) + 80);
         if (!x509_pm->x509_crt) {
             SSL_DEBUG(SSL_PLATFORM_ERROR_LEVEL, "no enough memory > (x509_pm->x509_crt)");
             goto no_mem;
