@@ -273,7 +273,7 @@ hs2:
 			lwsl_err("Failed to generate handshake for client\n");
 			lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS,
 					   "chs");
-			return 0;
+			return -1;
 		}
 
 		/* send our request to the server */

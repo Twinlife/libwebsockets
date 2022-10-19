@@ -564,12 +564,12 @@ lws_plat_mbedtls_net_send(void *ctx, const uint8_t *buf, size_t len)
 	if (fd < 0)
 		return MBEDTLS_ERR_NET_INVALID_CONTEXT;
 
-	ret = send(fd, buf, (unsigned int)len, 0);
+	ret = send(fd, (const char *)buf, (unsigned int)len, 0);
 	if (ret >= 0)
 		return ret;
 
 	en = LWS_ERRNO;
-	if (en == EAGAIN || en == EWOULDBLOCK)
+	if (en == EAGAIN || en == EWOULDBLOCK || en == WSAEWOULDBLOCK)
 		return MBEDTLS_ERR_SSL_WANT_WRITE;
 
 	ret = WSAGetLastError();
@@ -589,12 +589,12 @@ lws_plat_mbedtls_net_recv(void *ctx, unsigned char *buf, size_t len)
 	if (fd < 0)
 		return MBEDTLS_ERR_NET_INVALID_CONTEXT;
 
-	ret = (int)recv(fd, buf, (unsigned int)len, 0);
+	ret = (int)recv(fd, (char *)buf, (unsigned int)len, 0);
 	if (ret >= 0)
 		return ret;
 
 	en = LWS_ERRNO;
-	if (en == EAGAIN || en == EWOULDBLOCK)
+	if (en == EAGAIN || en == EWOULDBLOCK || en == WSAEWOULDBLOCK)
 		return MBEDTLS_ERR_SSL_WANT_READ;
 
 	ret = WSAGetLastError();

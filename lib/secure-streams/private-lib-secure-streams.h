@@ -147,10 +147,15 @@ typedef struct lws_ss_handle {
 			lws_mqtt_topic_elem_t		topic_qos;
 			lws_mqtt_topic_elem_t		sub_top;
 			lws_mqtt_subscribe_param_t 	sub_info;
+			lws_mqtt_subscribe_param_t 	shadow_sub;
 			/* allocation that must be destroyed with conn */
 			void				*heap_baggage;
 			const char			*subscribe_to;
 			size_t				subscribe_to_len;
+			struct lws_buflist		*buflist_unacked;
+			uint32_t			unacked_size;
+			uint8_t				retry_count;
+			uint8_t				send_unacked:1;
 		} mqtt;
 #endif
 #if defined(LWS_WITH_SYS_SMD)
