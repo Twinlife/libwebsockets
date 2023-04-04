@@ -1,6 +1,4 @@
 import("../../webrtc.gni")
-import("//build/config/android/config.gni")
-import("//build/config/android/rules.gni")
 
 config("libwebsockets_config") {
 }
@@ -35,6 +33,7 @@ rtc_library("libwebsockets") {
     "LWS_HAVE_WORKING_FORK",
     "LWS_HAVE_WORKING_VFORK",
     "LWS_HAVE_RTA_PREF",
+    "LWS_HAVE_HMAC_CTX_new",
       
     # lws_config.h
     "LWS_WITH_CUSTOM_HEADERS",
@@ -202,7 +201,6 @@ rtc_library("libwebsockets") {
 #    "lib/system/async-dns/async-dns-parse.c",
 ]
  deps = [
-    "//rtc_base:rtc_base",
     "//third_party/boringssl",    
   ]
   absl_deps = [ "//third_party/abseil-cpp/absl/types:optional" ]
