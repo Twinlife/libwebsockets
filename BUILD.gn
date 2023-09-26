@@ -111,6 +111,8 @@ rtc_library("libwebsockets") {
     "lib/tls",
     "lib/event-libs",
     "lib/system/metrics",
+    "$java_home/include",
+    "$java_home/include/linux",
   ]
     
   sources = [
