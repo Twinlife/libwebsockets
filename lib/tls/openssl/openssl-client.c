@@ -34,6 +34,11 @@
 #include "private-lib-core.h"
 #include "private-lib-tls-openssl.h"
 
+// --twinlife-- 2024-01-19: include the root CA defined in ssl_roots.h
+#include "rtc_base/ssl_roots.h"
+#define arraysize(array) (sizeof(array)/sizeof(array[0]))
+// --twinlife-- 2024-01-19
+
 /*
  * Care: many openssl apis return 1 for success.  These are translated to the
  * lws convention of 0 for success.
@@ -987,6 +992,14 @@ lws_tls_client_create_vhost_context(struct lws_vhost *vh,
 		/* loads OS default CA certs */
 		SSL_CTX_set_default_verify_paths(vh->tls.ssl_client_ctx);
 #endif
+
+        // --twinlife-- 2024-01-19: add the CA roots defined in rtc_base/ssl_roots.h
+        for (size_t i = 0; i < arraysize(kSSLCertCertificateList); i++) {
+            const unsigned char* cert_buffer = kSSLCertCertificateList[i];
+            size_t cert_buffer_len = kSSLCertCertificateSizeList[i];
+            lws_tls_client_vhost_extra_cert_mem(vh, cert_buffer, cert_buffer_len);
+        }
+        // --twinlife-- 2024-01-19
 
 	/* openssl init for cert verification (for client sockets) */
 	if (!ca_filepath && (!ca_mem || !ca_mem_len)) {

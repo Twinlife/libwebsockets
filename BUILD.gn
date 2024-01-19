@@ -203,7 +203,8 @@ rtc_library("libwebsockets") {
 #    "lib/system/async-dns/async-dns-parse.c",
 ]
  deps = [
-    "//third_party/boringssl",    
+    "//third_party/boringssl",
+    "//rtc_base:ssl"
   ]
   absl_deps = [ "//third_party/abseil-cpp/absl/types:optional" ]
 }
