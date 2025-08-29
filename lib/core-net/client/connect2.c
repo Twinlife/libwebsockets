@@ -358,6 +358,20 @@ solo:
 			goto failed1;
 		}
 #endif
+#if defined(EAI_NODATA) // --twinlife-- 2025-08-29: EAI_NODATA means no IP address associated with hostname
+		if (n == EAI_NODATA) {
+			/*
+			 * The DNS server responded with NXDOMAIN... even
+			 * though this is still in the client creation call,
+			 * we need to make a CCE, otherwise there won't be
+			 * any user indication of what went wrong
+			 */
+			wsi->client_suppress_CONNECTION_ERROR = 0;
+			lws_inform_client_conn_fail(wsi, (void *)dns_nxdomain,
+						    strlen(dns_nxdomain));
+			goto failed1;
+		}
+#endif // --twinlife-- 2025-08-29: EAI_NODATA means no IP address associated with hostname
 	}
 #else
 	/* this is either FAILED, CONTINUING, or already called connect_4 */
