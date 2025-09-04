@@ -1,10 +1,11 @@
 /*
- *  Copyright (c) 2018-2021 twinlife SA.
+ *  Copyright (c) 2018-2025 twinlife SA.
  *
  *  All Rights Reserved.
  *  
  *  Contributors: 
  *   Christian Jacquemot (Christian.Jacquemot@twinlife-systems.com)
+ *   Stephane Carrez (Stephane.Carrez@skyrock.com)
  */
 
 #ifndef WEBSOCKET_ANDROID_CONTAINER_H_
@@ -15,6 +16,9 @@
 extern "C" {
 #include <libwebsockets.h>
 }
+
+#define CONFIG_SECURE           0x01
+#define CONFIG_SNI_PASSTHROUGH  0x02
 
 namespace websocket {
 namespace jni {
@@ -28,7 +32,7 @@ class Container {
   ~Container();
 
   jlong CreateWebSocket(jlong session_id, int port, const char* host, const char* path,
-			bool secure, long timeout, const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password, const char* proxy_path);
+			int method, long timeout, const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password, const char* proxy_path);
 
   void Service(int timeout);
 

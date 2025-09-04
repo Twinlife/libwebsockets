@@ -46,7 +46,7 @@ JNI_FUNCTION_DECLARATION(jlong,
 			 jint port,
 			 jstring j_host,
 			 jstring j_path,
-			 jboolean secure,
+			 jint method,
                          jlong timeout,
 			 jstring j_proxy_address,
 			 jint proxy_port,
@@ -82,7 +82,7 @@ JNI_FUNCTION_DECLARATION(jlong,
     proxy_path = jni->GetStringUTFChars(j_proxy_path, NULL);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
-  jlong websocket_id = container->CreateWebSocket(sessionId, port, host, path, secure, timeout,
+  jlong websocket_id = container->CreateWebSocket(sessionId, port, host, path, method, timeout,
 						  proxy_address, proxy_port, proxy_username, proxy_password, proxy_path);
   if (host) {
     jni->ReleaseStringUTFChars(j_host, host);

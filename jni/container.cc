@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2018-2021 twinlife SA.
+ *  Copyright (c) 2018-2025 twinlife SA.
  *
  *  All Rights Reserved.
  *  
@@ -114,13 +114,13 @@ Container::~Container() {
   pthread_mutex_destroy(&jni_lws_list_mutex_);
 }  
 
-jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, const char* path, bool secure, long timeout,
+jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, const char* path, int method, long timeout,
 				 const char* proxy_address, int proxy_port, const char* proxy_username, const char* proxy_password, const char* proxy_path) {
 
   if (context_) {
     struct lws_vhost* vhost = lws_create_vhost(context_, &info_);
     if (vhost) {
-      if (proxy_address && proxy_port != 0) {
+      if (proxy_address && proxy_port != 0 && (method & CONFIG_SNI_PASSTHROUGH) == 0) {
 	vhost->http.http_proxy_port = proxy_port;
 	strncpy(vhost->http.http_proxy_address, proxy_address, sizeof(vhost->http.http_proxy_address) - 1);
 	vhost->http.http_proxy_address[sizeof(vhost->http.http_proxy_address) - 1] = '\0';
@@ -161,11 +161,11 @@ jlong Container::CreateWebSocket(jlong session_id, int port, const char* host, c
 
     struct lws_client_connect_info info_ws;
     memset(&info_ws, 0, sizeof(info_ws));
-    info_ws.port = port;
-    info_ws.address = host;
+    info_ws.port = method & CONFIG_SNI_PASSTHROUGH ? proxy_port : port;
+    info_ws.address = method & CONFIG_SNI_PASSTHROUGH ? proxy_address : host;
     info_ws.path = path;
     info_ws.context = context_;
-    info_ws.ssl_connection = secure;
+    info_ws.ssl_connection = method & CONFIG_SECURE ? true : false;
     info_ws.host = host;
     info_ws.origin = host;
     info_ws.ietf_version_or_minus_one = -1;
