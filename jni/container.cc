@@ -22,6 +22,37 @@
 #include "container.h"
 #include "observer_jni.h"
 
+// issuer: Common Name: Go Daddy Root Certificate Authority - G2; Organization: GoDaddy.com, Inc.; Locality: Scottsdale; State/Province: Arizona; Country: US
+static const unsigned char GoDaddyG2_SHA256[32] = {
+  0x98, 0xdf, 0xb8, 0x6e, 0x81, 0x4a, 0x28, 0x43,
+  0x3c, 0xbe, 0x7f, 0xe0, 0x4e, 0x73, 0x6f, 0x63,
+  0x97, 0xa3, 0x2d, 0xf2, 0xc9, 0xb0, 0xa0, 0x8b,
+  0xd5, 0x0a, 0x32, 0x51, 0x87, 0xe0, 0xc7, 0x70
+};
+
+// issuer: Common Name: ISRG Root X1, Organization: Internet Security Research Group, Country: US
+static const unsigned char ISRGRootX1_SHA256[32] = {
+  0xf4, 0x59, 0x3a, 0x1e, 0x07, 0xcc, 0x9c, 0xce,
+  0xff, 0xbe, 0xd9, 0xc1, 0x1d, 0xc5, 0x21, 0x83,
+  0x56, 0xf7, 0x81, 0x4d, 0x9b, 0x22, 0x94, 0x9d,
+  0xe7, 0x45, 0xe6, 0x29, 0x99, 0x0c, 0x6c, 0x60
+};
+
+// issuer: Common Name: ISRG Root X2, Organization: Internet Security Research Group, Country: US
+static const unsigned char ISRGRootX2_SHA256[32] = {
+  0xf9, 0x01, 0xed, 0xd2, 0x3d, 0x48, 0x80, 0x1a,
+  0xfc, 0xf0, 0x2b, 0x22, 0x48, 0x6d, 0x7d, 0xec,
+  0xa4, 0x6c, 0x6c, 0x09, 0x69, 0xad, 0x00, 0xe8,
+  0x85, 0xcb, 0xe8, 0x7b, 0x56, 0x5a, 0xe3, 0x96
+};
+
+// List of SHA256 fingerprints of root CA certificats public keys that we trust.
+static const unsigned char* const rootCertFingerprints[3] = {
+  GoDaddyG2_SHA256,
+  ISRGRootX1_SHA256,
+  ISRGRootX2_SHA256
+};
+
 namespace websocket {
 namespace jni {
 
@@ -408,7 +439,27 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 	  }
 
 	  if (common_name && bytes && length > 0) {
-	    verify_ok = observer_->OnVerify(session_id, websocket_id, common_name, bytes, length);
+            // Build the SHA-256 of the public key.
+            unsigned int digest_len;
+            unsigned char digest[EVP_MAX_MD_SIZE];
+            EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+            const EVP_MD* md = EVP_sha256();
+
+            EVP_MD_CTX_init(ctx);
+            EVP_DigestInit_ex(ctx, md, 0);
+            EVP_DigestUpdate(ctx, bytes, length);
+            EVP_DigestFinal(ctx, digest, &digest_len);
+            EVP_MD_CTX_destroy(ctx);
+
+            // Look each root CA fingerprint that we trust until we have a match.
+            if (digest_len == 32) {
+              for (int i = 0; i < 3; i++) {
+                if (memcmp(digest, rootCertFingerprints[i], digest_len) == 0) {
+                  verify_ok = true;
+                  break;
+                }
+              }
+            }
 	  }
 	  if (bytes) {
 	    OPENSSL_free(bytes);
@@ -417,6 +468,7 @@ int Container::Callback(struct lws* wsi, enum lws_callback_reasons reason, void*
 	    EVP_PKEY_free(pkey);
 	  }
 	  if (!verify_ok) {
+            // lwsl_hexdump_err(digest, digest_len);
 	    return -1;
 	  }
 	  break;

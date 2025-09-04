@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2018-2021 twinlife SA.
+ *  Copyright (c) 2018-2025 twinlife SA.
  *
  *  All Rights Reserved.
  *  
@@ -29,8 +29,7 @@ ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
     j_on_writable_(GetMethodID(jni, *j_observer_class_, "onWritable", "(JJ)Z")),
     j_on_message_(GetMethodID(jni, *j_observer_class_, "onMessage", "(JJLjava/nio/ByteBuffer;Z)V")),
     j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(JJ)V")),
-    j_on_timer_(GetMethodID(jni, *j_observer_class_, "onTimer", "(JJ)J")),
-    j_on_verify_(GetMethodID(jni, *j_observer_class_, "onVerify", "(JJLjava/lang/String;[B)Z")) {
+    j_on_timer_(GetMethodID(jni, *j_observer_class_, "onTimer", "(JJ)J")) {
 }
 
 ObserverJni::~ObserverJni() {
@@ -98,18 +97,5 @@ jlong ObserverJni::OnTimer(jlong session_id, jlong websocket_id) {
   return timeout;
 }
 
-bool ObserverJni::OnVerify(jlong session_id, jlong websocket_id, const char* common_name, void* bytes, size_t length) {
-
-  JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
-  ScopedLocalRefFrame local_ref_frame(env);
-  jstring j_common_name = env->NewStringUTF(common_name);
-  CHECK_EXCEPTION(env) << "error during NewStringUTF";
-  jbyteArray j_bytes = env->NewByteArray(length);
-  env->SetByteArrayRegion(j_bytes, 0, length, (const jbyte*)bytes);
-  bool verify = env->CallBooleanMethod(*j_observer_global_, j_on_verify_, session_id, websocket_id, j_common_name, j_bytes);
-  CHECK_EXCEPTION(env) << "error during CallBooleanMethod";
-  return verify;
-}
-  
 }  // namespace jni
 }  // namespace websocket

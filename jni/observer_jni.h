@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2018-2021 twinlife SA.
+ *  Copyright (c) 2018-2025 twinlife SA.
  *
  *  All Rights Reserved.
  *  
@@ -43,8 +43,6 @@ class ObserverJni {
 
   jlong OnTimer(jlong session_id, jlong websocket_id);
 
-  bool OnVerify(jlong session_id, jlong websocket_id, const char* common_name, void* bytes, size_t length);
-
  private:  
   const ScopedGlobalRef<jobject> j_observer_global_;
   const ScopedGlobalRef<jclass> j_observer_class_;
@@ -54,7 +52,6 @@ class ObserverJni {
   const jmethodID j_on_message_;
   const jmethodID j_on_close_;
   const jmethodID j_on_timer_;
-  const jmethodID j_on_verify_;
 };
 
 }  // namespace jni
