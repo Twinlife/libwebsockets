@@ -289,7 +289,7 @@ lws_callback_http_dummy(struct lws *wsi, enum lws_callback_reasons reason,
 		if (lws_http_transaction_completed(wsi))
 #endif
 			return -1;
-		break;
+		//		break; // --twinlife-- 2025-09-23: compilation without server fails with a warning
 #if defined(LWS_WITH_SERVER)
 	case LWS_CALLBACK_HTTP_BODY_COMPLETION:
 #if defined(LWS_WITH_HTTP_PROXY)

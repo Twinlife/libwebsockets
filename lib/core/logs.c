@@ -262,6 +262,7 @@ lwsl_timestamp(int level, char *p, size_t len)
 }
 
 #ifndef LWS_PLAT_OPTEE
+#ifndef LWS_DETECTED_PLAT_IOS // --twinlife-- 2025-09-23: disable colors for iOS
 static const char * const colours[] = {
 	"[31;1m", /* LLL_ERR */
 	"[36;1m", /* LLL_WARN */
@@ -278,10 +279,12 @@ static const char * const colours[] = {
 };
 
 static char tty;
+#endif  // --twinlife-- 2025-09-23: disable colors for iOS
 
 static void
 _lwsl_emit_stderr(int level, const char *line)
 {
+#ifndef LWS_DETECTED_PLAT_IOS // --twinlife-- 2025-09-23: disable colors for iOS
 	int n, m = LWS_ARRAY_SIZE(colours) - 1;
 
 	if (!tty)
@@ -297,6 +300,7 @@ _lwsl_emit_stderr(int level, const char *line)
 		}
 		fprintf(stderr, "%c%s%s%c[0m", 27, colours[m], line, 27);
 	} else
+#endif  // --twinlife-- 2025-09-23: disable colors for iOS
 		fprintf(stderr, "%s", line);
 }
 

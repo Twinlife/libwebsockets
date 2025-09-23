@@ -76,9 +76,11 @@ lws_read_h1(struct lws *wsi, unsigned char *buf, lws_filepos_t len)
 			goto bail;
 #endif
 		last_char = buf;
+#if defined(LWS_WITH_SERVER) // --twinlife-- 2025-09-23: fix compilation error on WebRTC
 		if (lws_handshake_server(wsi, &buf, (size_t)len))
 			/* Handshake indicates this session is done. */
 			goto bail;
+#endif // --twinlife-- 2025-09-23: fix compilation error on WebRTC
 
 		/* we might have transitioned to RAW */
 		if (wsi->role_ops == &role_ops_raw_skt

@@ -45,7 +45,7 @@ rtc_library("libwebsockets") {
     "LWS_WITH_NETLINK",
     "LWS_WITH_NETWORK",
     "LWS_WITH_CLIENT",
-    "LWS_WITH_SERVER",
+    "LWS_WITHOUT_SERVER",
     "LWS_WITH_CONMON",
 #    "LWS_WITH_SYS_ASYNC_DNS",
     "LWS_WITHOUT_EXTENSIONS",
@@ -61,12 +61,13 @@ rtc_library("libwebsockets") {
     "LWS_PLAT_UNIX",
     "LWS_LOGS_TIMESTAMP",
     "LWS_CLIENT_HTTP_PROXYING",
-    "LWS_LIBRARY_VERSION=\"4.1.0\"",
+    "LWS_LIBRARY_VERSION=\"4.3.0\"",
     "LWS_LIBRARY_VERSION_MAJOR=4",
-    "LWS_LIBRARY_VERSION_MINOR=1",
+    "LWS_LIBRARY_VERSION_MINOR=3",
     "LWS_LIBRARY_VERSION_PATCH=0",
     "LWS_LIBRARY_VERSION_NUMBER=(LWS_LIBRARY_VERSION_MAJOR*1000000)+(LWS_LIBRARY_VERSION_MINOR*1000)+LWS_LIBRARY_VERSION_PATCH",
     "LWS_LOGGING_BITFIELD_SET=(LLL_ERR|LLL_WARN|LLL_NOTICE)",
+    "LWS_LOG_TAG_LIFECYCLE=0",
     "LWS_OPENSSL_SUPPORT",
     "LWS_OPENSSL_CLIENT_CERTS=\"/system/etc/security/cacerts\"",
     "LWS_NO_DAEMONIZE",
@@ -120,6 +121,7 @@ rtc_library("libwebsockets") {
     "jni/container.cc",
     "jni/jni_helpers.cc",
     "jni/observer_jni.cc",
+    "lib/twinlife/wscontainer.cc",
     "lib/plat/unix/unix-caps.c",
     "lib/plat/unix/unix-misc.c",
     "lib/plat/unix/unix-init.c",
@@ -171,9 +173,9 @@ rtc_library("libwebsockets") {
     "lib/roles/ws/client-ws.c",
     "lib/roles/ws/client-parser-ws.c",
     "lib/roles/ws/ops-ws.c",
-    "lib/roles/ws/server-ws.c",
-    "lib/tls/tls-server.c",
-    "lib/tls/openssl/openssl-server.c",
+    # "lib/roles/ws/server-ws.c",
+    # "lib/tls/tls-server.c",
+    # "lib/tls/openssl/openssl-server.c",
     "lib/roles/raw-skt/ops-raw-skt.c",
     "lib/roles/raw-file/ops-raw-file.c",
     "lib/roles/raw-proxy/ops-raw-proxy.c",
@@ -206,6 +208,5 @@ rtc_library("libwebsockets") {
     "//third_party/boringssl",
     "//rtc_base:ssl"
   ]
-  absl_deps = [ "//third_party/abseil-cpp/absl/types:optional" ]
 }
 
