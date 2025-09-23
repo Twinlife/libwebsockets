@@ -23,8 +23,8 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 
         TLWebSocket *webSocket = socket_;
 	if (webSocket) {
-	    TLConnectionStats *stats = [webSocket getCurrentStats];
-            [webSocket.delegate onConnect:webSocket stats:stats];
+	    NSArray<TLConnectionStats *> *stats = [webSocket getStats];
+            [webSocket.delegate onConnect:webSocket stats:stats active:session->GetActiveSocket()];
 	}
     }
 
@@ -33,7 +33,8 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 
         TLWebSocket *webSocket = socket_;
 	if (webSocket) {
-            [webSocket.delegate onConnectError:webSocket error:error];
+	    NSArray<TLConnectionStats *> *stats = [webSocket getStats];
+            [webSocket.delegate onConnectError:webSocket stats:stats error:error];
 	}
 	session->Close();
 	return -1;
@@ -159,16 +160,16 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
     }
 }
 
-- (nullable TLConnectionStats *)getCurrentStats {
+- (nonnull NSArray<TLConnectionStats *> *)getStats {
 
+    NSMutableArray<TLConnectionStats *> *result = [[NSMutableArray alloc] init];
     websocket::Session *s = self.session;
     if (s) {
-       const websocket::ConnectionStats *stats = s->GetStats();
-       if (stats) {
-           return [[TLConnectionStats alloc] initWithStats:stats];
-       }
+        for (int i = 0; i < s->GetSocketCount(); i++) {
+	    [result addObject:[[TLConnectionStats alloc] initWithStats:s->GetStats(i)]];
+	}
     }
-    return nil;
+    return result;
 }
 
 - (nonnull NSString *)description {
@@ -180,8 +181,11 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 - (void)dealloc {
 
     websocket::Session *s = self.session;
+    self.session = nil;
     lwsl_notice("dealloc %ld", s ? s->GetSessionId() : -1);
-    [self close];
+    if (s) {
+        s->Close();
+    }
 }
 
 @end

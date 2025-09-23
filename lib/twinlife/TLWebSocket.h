@@ -77,16 +77,14 @@ RTC_OBJC_EXPORT
 
 - (void)triggerWritable;
 
-- (nullable TLConnectionStats *)getCurrentStats;
-
 @end
 
 RTC_OBJC_EXPORT
 @protocol TLWebSocketDelegate<NSObject>
 
-- (void)onConnect:(nonnull TLWebSocket *)websocket stats:(nonnull TLConnectionStats *)stats;
+- (void)onConnect:(nonnull TLWebSocket *)websocket stats:(nonnull NSArray<TLConnectionStats *> *)stats active:(int)active;
 
-- (void)onConnectError:(nonnull TLWebSocket *)websocket error:(int)error;
+- (void)onConnectError:(nonnull TLWebSocket *)websocket stats:(nonnull NSArray<TLConnectionStats *> *)stats error:(int)error;
 
 - (void)onClose:(nonnull TLWebSocket *)websocket;
 

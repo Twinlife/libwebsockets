@@ -553,7 +553,7 @@ void Session::OnDestroy(struct lws *wsi) {
 
   if (wsiCount_ == 0) {
     container_.Destroy(this);
-    observer_.OnDestroy(this); 
+    // observer_.OnDestroy(this); 
   }
 }
 
