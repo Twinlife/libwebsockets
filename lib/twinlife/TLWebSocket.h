@@ -45,6 +45,8 @@ RTC_OBJC_EXPORT
 @property (readonly) int64_t txnResponseTime;
 @property (readonly) int connectCount;
 @property (readonly) int lastError;
+@property (readonly, nullable) NSString *ipAddr;
+@property (readonly) BOOL ipv6;
 
 @end
 

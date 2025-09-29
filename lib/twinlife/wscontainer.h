@@ -65,6 +65,8 @@ namespace websocket {
     long txnResponseTime;
     long connectCount;
     Error lastError;
+    bool ipv6;
+    char ip_addr[INET6_ADDRSTRLEN];
   };
 
   class SessionObserver {

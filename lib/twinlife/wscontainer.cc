@@ -160,10 +160,15 @@ const struct ConnectionStats *Session::GetStats(int index) {
 
     lws_conmon_wsi_take(wsi, &cm);
 
+    memset(&webSocket.stats_, 0, sizeof(webSocket.stats_));
     webSocket.stats_.dnsTime = cm.ciu_dns;
     webSocket.stats_.tcpConnectTime = cm.ciu_sockconn;
     webSocket.stats_.tlsConnectTime = cm.ciu_tls;
     webSocket.stats_.txnResponseTime = cm.ciu_txn_resp;
+    if (cm.peer46.sa4.sin_family != 0) {
+      webSocket.stats_.ipv6 = cm.peer46.sa4.sin_family == AF_INET6;
+      lws_sa46_write_numeric_address(&cm.peer46, webSocket.stats_.ip_addr, sizeof(webSocket.stats_.ip_addr));
+    }
     lws_conmon_release(&cm);
   }
   pthread_mutex_unlock(&lock_);
