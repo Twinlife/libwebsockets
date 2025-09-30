@@ -10,8 +10,6 @@
 #import "TLWebSocket.mm"
 #import "TLWebSocket+Private.h"
 
-// #include "rtc_base/logging.h"
-
 namespace websocket {
 class SessionObserverDelegateAdapter : public websocket::SessionObserver {
   public:
@@ -135,14 +133,7 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
     websocket::Session* s = self.session;
     if (s) {
         size_t length = (size_t)[buffer length];
-	unsigned char* buf = (unsigned char*) malloc(length + LWS_SEND_BUFFER_PRE_PADDING);
-	if (!buf) {
-	    return false;
-	}
-	memcpy(&buf[LWS_SEND_BUFFER_PRE_PADDING], [buffer bytes], length);
-	bool result = s->SendMessage(&buf[LWS_SEND_BUFFER_PRE_PADDING], length, binary);
-	free(buf);
-	return result;
+	return s->SendMessage((const void*) [buffer bytes], length, binary);
     }
     return false;
 }
@@ -199,12 +190,22 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 RTC_OBJC_EXPORT
 @implementation TLWebSocketContainer
 
-- (nonnull instancetype)init {
+- (nonnull instancetype)initWithLevel:(int)level {
 
     self = [super init];
     if (self) {
         _container = new websocket::Container();
-        lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_INFO | LLL_DEBUG, 0);
+	int l = LLL_ERR | LLL_WARN;
+	if (level >= 1) {
+	    l |= LLL_NOTICE;
+	    if (level >= 2) {
+	        l |= LLL_INFO;
+		if (level >= 3) {
+		    l |= LLL_DEBUG;
+		}
+	    }
+	}
+        lws_set_log_level(l, 0);
     }
     return self;
 }

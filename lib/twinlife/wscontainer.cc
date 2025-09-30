@@ -13,8 +13,6 @@
 #include <private-lib-core.h>
 #include <private-lib-tls.h>
 
-// #include "rtc_base/third_party/base64/base64.h"
-
 #include "wscontainer.h"
 
 // issuer: Common Name: Go Daddy Root Certificate Authority - G2; Organization: GoDaddy.com, Inc.; Locality: Scottsdale; State/Province: Arizona; Country: US
@@ -72,9 +70,7 @@ static struct lws_protocols protocols[] = {
 
 static int callback(struct lws* wsi, enum lws_callback_reasons reason, void* user, void* in, size_t len) {
 
-  lwsl_notice("callback %d len=%d", reason, (int)len);
-
-  lwsl_debug("callback wsi=%p reason=%d user=%p in=%p len=%lu\n", wsi, reason, user, in, (unsigned long)len);
+  lwsl_info("callback wsi=%p reason=%d user=%p in=%p len=%lu\n", wsi, reason, user, in, (unsigned long)len);
 
   // Callback execution order:
   // Setup:
@@ -301,7 +297,7 @@ void Session::TriggerWritable() {
 
 Session::~Session() {
 
-  lwsl_err("Destroy session %ld", sessionId_);
+  lwsl_notice("Destroy session %ld", sessionId_);
 
   for (int i = 0; i < socketCount_; i++) {
     if (sockets_[i].vhost_) {
@@ -313,7 +309,7 @@ Session::~Session() {
   free(path_);
 }
 
-bool Session::SendMessage(void* buffer, size_t length, bool binary) {
+bool Session::SendMessage(const void* buffer, size_t length, bool binary) {
 
   struct lws *wsi;
 
@@ -326,7 +322,15 @@ bool Session::SendMessage(void* buffer, size_t length, bool binary) {
   pthread_mutex_unlock(&lock_);
 
   if (wsi) {
-    return lws_write(wsi, (unsigned char*) buffer, length, binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT) >= 0;
+    unsigned char* buf = (unsigned char*) lws_malloc(length + LWS_SEND_BUFFER_PRE_PADDING + LWS_SEND_BUFFER_POST_PADDING, "SendMessage");
+    if (!buf) {
+      return false;
+    }
+    unsigned char* data = &buf[LWS_SEND_BUFFER_PRE_PADDING];
+    memcpy(data, buffer, length);
+    int result = lws_write(wsi, data, length, binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT);
+    lws_free(buf);
+    return result >= 0;
   }
   return false;
 }
@@ -534,7 +538,7 @@ void Session::OnClose(struct lws *wsi) {
     }
   }
   pthread_mutex_unlock(&lock_);
-  lwsl_err("%s: OnClose wsi %p\n", __func__, wsi);
+  lwsl_notice("%s: OnClose wsi %p\n", __func__, wsi);
 
   if (wsiCount == 0) {
     observer_.OnClose(this);
@@ -553,7 +557,7 @@ void Session::OnDestroy(struct lws *wsi) {
   wsiCount_--;
   pthread_mutex_unlock(&lock_);
 
-  lwsl_err("%s: destroy wsi %p\n", __func__, wsi);
+  lwsl_notice("%s: destroy wsi %p\n", __func__, wsi);
   wsi->a.vhost = NULL;
 
   if (wsiCount_ == 0) {
@@ -668,7 +672,6 @@ int Session::OnTimer(struct lws *wsi) {
     for (int i = 0; i < socketCount_; i++) {
       WebSocket *webSocket = &sockets_[i];    
       if (webSocket->wsi_) {
-        // lws_usec_t dt = now - webSocket->startTime_;
         if (webSocket->wsi_ == wsi) {
           timeout = connectDeadlineTime_ - now;
           curIndex = i;
@@ -689,6 +692,7 @@ int Session::OnTimer(struct lws *wsi) {
     }
   } else {
     timeout = 10 * 1000 * 1000;
+    curIndex = active_;
   }
   pthread_mutex_unlock(&lock_);
 

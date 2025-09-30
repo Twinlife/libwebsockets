@@ -99,7 +99,7 @@ RTC_OBJC_EXPORT
 RTC_OBJC_EXPORT
 @interface TLWebSocketContainer : NSObject
 
-- (nonnull instancetype)init;
+- (nonnull instancetype)initWithLevel:(int)level;
 
 - (void)serviceWithTimeout:(int)timeout;
 

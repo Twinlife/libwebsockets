@@ -140,7 +140,7 @@ namespace websocket {
 
     // Send a message on the active connected websocket.
     // Returns true if the message was sent and false if some error occurred.
-    bool SendMessage(void* buffer, size_t length, bool binary);
+    bool SendMessage(const void* buffer, size_t length, bool binary);
 
     // Called by the application to close the websocket session and all its connections.
     void Close();
