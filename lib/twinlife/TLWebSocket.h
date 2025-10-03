@@ -77,8 +77,6 @@ RTC_OBJC_EXPORT
 
 - (long)sessionId;
 
-- (void)triggerWritable;
-
 @end
 
 RTC_OBJC_EXPORT
@@ -91,8 +89,6 @@ RTC_OBJC_EXPORT
 - (void)onClose:(nonnull TLWebSocket *)websocket;
 
 - (void)onMessage:(nonnull TLWebSocket *)websocket message:(nonnull NSData *)data binary:(BOOL)binary;
-
-- (void)onWritable:(nonnull TLWebSocket *)websocket;
 
 @end
 

@@ -282,19 +282,6 @@ int Session::Connect(WebSocket& webSocket, long timeout) {
   return 0;
 }
 
-void Session::TriggerWritable() {
-
-  pthread_mutex_lock(&lock_);
-  if (active_ >= 0) {
-    WebSocket *webSocket = &sockets_[active_];
-    struct lws *wsi = webSocket->wsi_;
-    if (wsi) {
-      lws_callback_on_writable(wsi);
-    }
-  }
-  pthread_mutex_unlock(&lock_);
-}  
-
 Session::~Session() {
 
   lwsl_notice("Destroy session %ld", sessionId_);
@@ -311,34 +298,51 @@ Session::~Session() {
 
 bool Session::SendMessage(const void* buffer, size_t length, bool binary) {
 
-  struct lws *wsi;
+  struct Packet* pkt = (struct Packet*) lws_malloc(sizeof(struct Packet) + length + LWS_SEND_BUFFER_PRE_PADDING + LWS_SEND_BUFFER_POST_PADDING, "SendMessage");
+  if (!pkt) {
+    return false;
+  }
 
+  pkt->next = nullptr;
+  pkt->length = length;
+  pkt->binary = binary;
+
+  unsigned char* data = &pkt->buffer[LWS_SEND_BUFFER_PRE_PADDING];
+  memcpy(data, buffer, length);
+
+  struct lws *wsi;
   pthread_mutex_lock(&lock_);
   if (active_ >= 0) {
     wsi = sockets_[active_].wsi_;
+    struct Packet *next = packets_;
+    if (!next) {
+      packets_ = pkt;
+    } else {
+      while (next->next) {
+	next = next->next;
+      }
+      next->next = pkt;
+    }
   } else {
     wsi = nullptr;
   }
   pthread_mutex_unlock(&lock_);
 
   if (wsi) {
-    unsigned char* buf = (unsigned char*) lws_malloc(length + LWS_SEND_BUFFER_PRE_PADDING + LWS_SEND_BUFFER_POST_PADDING, "SendMessage");
-    if (!buf) {
-      return false;
-    }
-    unsigned char* data = &buf[LWS_SEND_BUFFER_PRE_PADDING];
-    memcpy(data, buffer, length);
-    int result = lws_write(wsi, data, length, binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT);
-    lws_free(buf);
-    return result >= 0;
+    lws_callback_on_writable(wsi);
+    return true;
+  } else {
+    // Packet was not queued because there was no active wsi.
+    free(pkt);
+    return false;
   }
-  return false;
 }
 
 void Session::Close() {
 
   struct lws *toClose[NB_SOCKETS];
   int closeCount = 0;
+  struct Packet *pkt;
 
   pthread_mutex_lock(&lock_);
   for (int i = 0; i < socketCount_; i++) {
@@ -355,7 +359,16 @@ void Session::Close() {
       wsi->client_suppress_CONNECTION_ERROR = 1;
     }
   }
+  pkt = packets_;
+  packets_ = nullptr;
   pthread_mutex_unlock(&lock_);
+
+  // Release any pending packet.
+  while (pkt) {
+    struct Packet *next = pkt->next;
+    free(pkt);
+    pkt = next;
+  }
 
   for (int i = 0; i < closeCount; i++) {
     lws_set_timeout(toClose[i], PENDING_TIMEOUT_AWAITING_PROXY_RESPONSE, LWS_TO_KILL_SYNC);
@@ -517,7 +530,26 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
 
 int Session::OnWritable(struct lws *wsi) {
 
-  return observer_.OnWritable(this) ? 0 : -1;
+  // The lws_write() can be called only from the LWS_CALLBACK_CLIENT_WRITEABLE callback.
+  while (1) {
+    struct Packet *pkt;
+
+    pthread_mutex_lock(&lock_);
+    pkt = packets_;
+    if (pkt) {
+      packets_ = pkt->next;
+    }
+    pthread_mutex_unlock(&lock_);
+    if (!pkt) {
+      return 0;
+    }
+
+    int result = lws_write(wsi, &pkt->buffer[LWS_SEND_BUFFER_PRE_PADDING], pkt->length, pkt->binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT);
+    free(pkt);
+    if (result < 0) {
+      return -1;
+    }	
+  }
 }
 
 void Session::OnReceive(struct lws *wsi, void *in, size_t len) {
@@ -528,6 +560,7 @@ void Session::OnReceive(struct lws *wsi, void *in, size_t len) {
 void Session::OnClose(struct lws *wsi) {
 
   int wsiCount = 0;
+  struct Packet *pkt;
 
   pthread_mutex_lock(&lock_);
   for (int i = 0; i < socketCount_; i++) {
@@ -537,7 +570,20 @@ void Session::OnClose(struct lws *wsi) {
       wsiCount++;
     }
   }
+  if (wsiCount == 0) {
+    pkt = packets_;
+    packets_ = nullptr;
+  } else {
+    pkt = nullptr;
+  }
   pthread_mutex_unlock(&lock_);
+
+  // Release any pending packet.
+  while (pkt) {
+    struct Packet *next = pkt->next;
+    free(pkt);
+    pkt = next;
+  }
   lwsl_notice("%s: OnClose wsi %p\n", __func__, wsi);
 
   if (wsiCount == 0) {

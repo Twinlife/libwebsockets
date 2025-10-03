@@ -75,8 +75,6 @@ namespace websocket {
 
     virtual long OnConnectError(Session *session, Error error) = 0;
   
-    virtual bool OnWritable(Session *session) = 0;
-
     virtual void OnReceive(Session *session, void* message, size_t length, bool binary) = 0;
 
     virtual void OnClose(Session *session) = 0;
@@ -119,6 +117,13 @@ namespace websocket {
     struct ConnectionStats stats_;
   };
 
+  struct Packet {
+    struct Packet *next;
+    int length;
+    bool binary;
+    unsigned char buffer[1];
+  };
+
   // A session to the server that could contain one or several websockets.
   class Session {
     friend class Container;
@@ -154,7 +159,6 @@ namespace websocket {
     int GetActiveSocket() {
       return active_;
     }
-    void TriggerWritable();
   private:
     const long sessionId_;
     const lws_usec_t startTime_;
@@ -171,6 +175,7 @@ namespace websocket {
     char* path_;
     pthread_mutex_t lock_;
     WebSocket sockets_[NB_SOCKETS];
+    struct Packet *packets_;
 
     Session(Container* container, SessionObserver *observer, long sessionId,
             int port, const char* host, const char* path, int method, long timeout);

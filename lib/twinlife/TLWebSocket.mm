@@ -38,16 +38,6 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 	return -1;
     }
   
-    bool OnWritable(Session *session) override {
-        lwsl_notice("OnWritable %ld", session->GetSessionId());
-
-        TLWebSocket *webSocket = socket_;
-	if (webSocket) {
-            [webSocket.delegate onWritable:webSocket];
-	}
-	return true;
-    }
-
     void OnReceive(Session *session, void* message, size_t length, bool binary) override {
         TLWebSocket *webSocket = socket_;
 	if (webSocket) {
@@ -145,15 +135,6 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
     lwsl_notice("Close %ld", s ? s->GetSessionId() : -1);
     if (s) {
         s->Close();
-    }
-}
-
-- (void)triggerWritable {
-
-    websocket::Session* s = self.session;
-    lwsl_notice("TriggerWritable %ld", s ? s->GetSessionId() : -1);
-    if (s) {
-	s->TriggerWritable();
     }
 }
 
