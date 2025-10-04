@@ -179,14 +179,15 @@ Session::Session(Container* container, SessionObserver *observer, long sessionId
     container_(*container),
     observer_(*observer)
 {
-  hostname_ = strdup(host);
-  path_ = strdup(path);
-  port_ = port;
-  method_ = method;
   socketCount_ = 0;
   wsiCount_ = 0;
   active_ = -1;
   status_ = CONNECTING;
+  port_ = port;
+  method_ = method;
+  hostname_ = strdup(host);
+  path_ = strdup(path);
+  packets_ = nullptr;
 
   pthread_mutex_init(&lock_, NULL);
 }

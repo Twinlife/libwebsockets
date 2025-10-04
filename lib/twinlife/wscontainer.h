@@ -100,7 +100,7 @@ namespace websocket {
     friend class Container;
   private:
     WebSocket() : method_(0), port_(0), status_(NONE), address_(0), proxy_address_(0),
-                  wsi_(0), vhost_(0), root_certificate_verified_(false), startTime_(0) {
+                  proxy_port_(0), wsi_(0), vhost_(0), root_certificate_verified_(false), startTime_(0) {
       memset(&stats_, 0, sizeof(stats_));
     }
 
@@ -173,9 +173,9 @@ namespace websocket {
     int method_;
     char* hostname_;
     char* path_;
+    struct Packet *packets_;
     pthread_mutex_t lock_;
     WebSocket sockets_[NB_SOCKETS];
-    struct Packet *packets_;
 
     Session(Container* container, SessionObserver *observer, long sessionId,
             int port, const char* host, const char* path, int method, long timeout);
