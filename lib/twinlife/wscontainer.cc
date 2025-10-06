@@ -609,7 +609,7 @@ void Session::OnDestroy(struct lws *wsi) {
 
   if (wsiCount_ == 0) {
     container_.Destroy(this);
-    // observer_.OnDestroy(this); 
+    observer_.OnDestroy(this); 
   }
 }
 
@@ -755,7 +755,7 @@ int Session::OnTimer(struct lws *wsi) {
     if (timeout <= 0) {
       timeout = 10 * 1000 * 1000;
     }
-    lwsl_notice("OnTimer %ld.%d new timeout %lld", sessionId_, curIndex, timeout);
+    lwsl_notice("OnTimer %ld.%d new timeout %lld", sessionId_, curIndex, (long long) timeout);
     lws_set_timer_usecs(wsi, timeout);
     return 0;
   }

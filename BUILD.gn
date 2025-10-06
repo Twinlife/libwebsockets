@@ -66,7 +66,7 @@ rtc_library("libwebsockets") {
     "LWS_LIBRARY_VERSION_MINOR=3",
     "LWS_LIBRARY_VERSION_PATCH=0",
     "LWS_LIBRARY_VERSION_NUMBER=(LWS_LIBRARY_VERSION_MAJOR*1000000)+(LWS_LIBRARY_VERSION_MINOR*1000)+LWS_LIBRARY_VERSION_PATCH",
-    "LWS_LOGGING_BITFIELD_SET=(LLL_ERR|LLL_WARN|LLL_NOTICE)",
+    "LWS_LOGGING_BITFIELD_SET=(LLL_ERR|LLL_WARN|LLL_NOTICE|LLL_INFO)",
     "LWS_LOG_TAG_LIFECYCLE=0",
     "LWS_OPENSSL_SUPPORT",
     "LWS_OPENSSL_CLIENT_CERTS=\"/system/etc/security/cacerts\"",
@@ -112,13 +112,13 @@ rtc_library("libwebsockets") {
     "lib/tls",
     "lib/event-libs",
     "lib/system/metrics",
+    "lib/twinlife",
     "$java_home/include",
     "$java_home/include/linux",
   ]
     
   sources = [
     "jni/container_jni.cc",
-    "jni/container.cc",
     "jni/jni_helpers.cc",
     "jni/observer_jni.cc",
     "lib/twinlife/wscontainer.cc",

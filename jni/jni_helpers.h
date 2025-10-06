@@ -25,6 +25,12 @@
   RTC_CHECK(!jni->ExceptionCheck()) \
       << (jni->ExceptionDescribe(), jni->ExceptionClear(), "")
 
+namespace webrtc {
+namespace jni {
+
+  void DeleteGlobalRef(JNIEnv* jni, jobject o);
+}}
+
 namespace websocket {
 namespace jni {
 
@@ -40,8 +46,6 @@ bool IsNull(JNIEnv* jni, jobject obj);
 
 // Given a UTF-8 encoded |native| string return a new (UTF-16) jstring.
 jstring NativeToJavaString(JNIEnv* jni, const std::string& native);
-
-void DeleteGlobalRef(JNIEnv* jni, jobject o);
 
 // Scope Java local references to the lifetime of this object.  Use in all C++
 // callbacks (i.e. entry points that don't originate in a Java callstack
@@ -62,7 +66,7 @@ class ScopedGlobalRef {
   ScopedGlobalRef(JNIEnv* jni, T obj)
       : obj_(static_cast<T>(jni->NewGlobalRef(obj))) {}
   ~ScopedGlobalRef() {
-    DeleteGlobalRef(webrtc::jni::AttachCurrentThreadIfNeeded(), obj_);
+    webrtc::jni::DeleteGlobalRef(webrtc::jni::AttachCurrentThreadIfNeeded(), obj_);
   }
   T operator*() const {
     return obj_;

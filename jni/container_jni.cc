@@ -1,5 +1,6 @@
 #include <memory>
 #include <utility>
+#include <stdlib.h>
 
 #if defined(WEBRTC_ANDROID)
 #  include <android/log.h>
@@ -7,54 +8,115 @@
 
 #include "sdk/android/src/jni/jni_helpers.h"
 
-#include <libwebsockets.h>
-#include <private-lib-core.h>
-#include <private-lib-tls.h>
-#include <private-lib-core-net.h>
-
-#include "container.h"
+#include "container_jni.h"
 #include "observer_jni.h"
 
 #undef JNI_FUNCTION_DECLARATION
 #define JNI_FUNCTION_DECLARATION(rettype, name, ...) \
   extern "C" JNIEXPORT rettype JNICALL Java_org_libwebsockets_##name(__VA_ARGS__)
 
+
 namespace websocket {
 namespace jni {
 
-jlong CreateContainerForJava(JNIEnv* jni,
-			     jobject j_observer) {
+static void emit_log(int level, const char* msg) {
+#if defined(WEBRTC_ANDROID)  
+  if (level == LLL_NOTICE || level == LLL_INFO) {
+    __android_log_write(ANDROID_LOG_INFO, "lws", msg);
+  } else if (level == LLL_WARN) {
+    __android_log_write(ANDROID_LOG_WARN, "lws", msg);
+  } else if (level == LLL_ERR) {
+    __android_log_write(ANDROID_LOG_ERROR, "lws", msg);
+  } else {
+    __android_log_write(ANDROID_LOG_DEBUG, "lws", msg);
+  }
+#endif
+  static long start;
+  struct timeval tv;
 
-  return webrtc::jni::jlongFromPointer(new Container(new ObserverJni(jni, j_observer)));
+  (void)gettimeofday(&tv, 0);
+  if (start == 0)
+    start = tv.tv_sec;
+  fprintf(stderr, "lws[%ld.%06ld] %d: %s", tv.tv_sec - start, tv.tv_usec, level, msg);
 }
-  
+
+Container::Container(JNIEnv* jni) :
+  j_proxy_class_(jni->FindClass("Lorg/libwebsockets/SocketProxyDescriptor;")),
+  j_connection_stats_class_(jni->FindClass("Lorg/libwebsockets/ConnectionStats;"))
+{
+  f_proxy_port_ = jni->GetFieldID(j_proxy_class_, "proxyPort", "I");
+  f_proxy_method_ = jni->GetFieldID(j_proxy_class_, "method", "I");
+  f_proxy_address_ = jni->GetFieldID(j_proxy_class_, "proxyAddress", "Ljava/lang/String;");
+}
+
+struct websocket::ProxyDescriptor *Container::GetProxies(JNIEnv *env, jobjectArray j_proxies)
+{
+  int proxyCount = env->GetArrayLength(j_proxies);
+  if (proxyCount <= 0) {
+    return nullptr;
+  }
+
+  struct websocket::ProxyDescriptor *result = (struct websocket::ProxyDescriptor *)malloc (proxyCount * sizeof(struct websocket::ProxyDescriptor));
+  if (!result) {
+    return nullptr;
+  }
+  for (jsize i = 0; i < proxyCount; i++) {
+    struct websocket::ProxyDescriptor *current = &result[i];
+    jobject obj = env->GetObjectArrayElement(j_proxies, i);
+
+    jstring jstr = (jstring) env->GetObjectField(obj, f_proxy_address_);
+    if (jstr) {
+      const char *p = env->GetStringUTFChars(jstr, NULL);
+      current->proxy_address = strdup(p);
+      env->ReleaseStringUTFChars(jstr, p);
+    } else {
+      current->proxy_address = nullptr;
+    }
+    current->proxy_username = nullptr;
+    current->proxy_password = nullptr;
+    current->proxy_path = nullptr;
+    current->proxy_port = env->GetIntField(obj, f_proxy_port_);
+    current->method = env->GetIntField(obj, f_proxy_method_);
+    env->DeleteLocalRef(obj);
+  }
+  return result;
+}
+
+jlong CreateContainerForJava(JNIEnv* jni) {
+
+  return webrtc::jni::jlongFromPointer(new websocket::jni::Container(jni));
+}
+
 JNI_FUNCTION_DECLARATION(jlong,
-			 ContainerImpl_nativeCreateContainer,
+			 Container_nativeCreateContainer,
 			 JNIEnv* jni,
 			 jclass,
-			 jobject j_observer) {
+			 jint j_level) {
 
-  return CreateContainerForJava(jni, j_observer);
+  if (j_level == 0) {
+    lws_set_log_level(LLL_ERR, emit_log);    
+  } else if (j_level == 1) {
+    lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE, emit_log);
+  } else {
+    lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_INFO, emit_log);    
+  }
+  return CreateContainerForJava(jni);
 }
 
 JNI_FUNCTION_DECLARATION(jlong,
-			 ContainerImpl_nativeCreateWebSocket,
+			 Container_nativeCreateSession,
 			 JNIEnv* jni,
                          jclass,
                          jlong container_p,
+                         jobject j_observer,
 			 jlong sessionId,
 			 jint port,
 			 jstring j_host,
 			 jstring j_path,
 			 jint method,
                          jlong timeout,
-			 jstring j_proxy_address,
-			 jint proxy_port,
-			 jstring j_proxy_username,
-			 jstring j_proxy_password,
-			 jstring j_proxy_path) {
+			 jobjectArray j_proxies) {
 
-  Container* container = reinterpret_cast<Container*>(container_p);
   const char* host = j_host ? jni->GetStringUTFChars(j_host, NULL) : NULL;
   CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   const char* path = NULL;
@@ -62,28 +124,25 @@ JNI_FUNCTION_DECLARATION(jlong,
     path = jni->GetStringUTFChars(j_path, NULL);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
-  const char* proxy_address = NULL;
-  if (!IsNull(jni, j_proxy_address)) {
-    proxy_address = jni->GetStringUTFChars(j_proxy_address, NULL);
-    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+
+  jlong websocket_id = 0;
+  if (container_p) {
+    websocket::jni::Container* container = reinterpret_cast<websocket::jni::Container*>(container_p);
+
+    websocket::jni::Observer *observer = new websocket::jni::Observer(jni, j_observer);
+    int proxyCount = jni->GetArrayLength(j_proxies);
+    struct websocket::ProxyDescriptor *proxies = container->GetProxies(jni, j_proxies);
+    websocket::Session *session = container->CreateWebSocket(observer, sessionId, port, host, path, method, timeout, proxies, proxyCount);
+    websocket_id = webrtc::jni::jlongFromPointer(session);
+    if (proxies) {
+      for (int i = 0; i < proxyCount; i++) {
+        if (proxies[i].proxy_address) {
+          free((void*)proxies[i].proxy_address);
+        }
+      }
+      free(proxies);
+    }
   }
-  const char* proxy_username = NULL;
-  if (!IsNull(jni, j_proxy_username)) {
-    proxy_username = jni->GetStringUTFChars(j_proxy_username, NULL);
-    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  }
-  const char* proxy_password = NULL;
-  if (!IsNull(jni, j_proxy_password)) {
-    proxy_password = jni->GetStringUTFChars(j_proxy_password, NULL);
-    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  }
-  const char* proxy_path = NULL;
-  if (!IsNull(jni, j_proxy_path)) {
-    proxy_path = jni->GetStringUTFChars(j_proxy_path, NULL);
-    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  }
-  jlong websocket_id = container->CreateWebSocket(sessionId, port, host, path, method, timeout,
-						  proxy_address, proxy_port, proxy_username, proxy_password, proxy_path);
   if (host) {
     jni->ReleaseStringUTFChars(j_host, host);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
@@ -92,102 +151,105 @@ JNI_FUNCTION_DECLARATION(jlong,
     jni->ReleaseStringUTFChars(j_path, path);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
-  if (proxy_address) {
-    jni->ReleaseStringUTFChars(j_proxy_address, proxy_address);
-    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  }
-  if (proxy_username) {
-    jni->ReleaseStringUTFChars(j_proxy_username, proxy_username);
-    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  }
-  if (proxy_password) {
-    jni->ReleaseStringUTFChars(j_proxy_password, proxy_password);
-    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  }
-  if (proxy_path) {
-    jni->ReleaseStringUTFChars(j_proxy_path, proxy_path);
-    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
-  }
   return websocket_id;
 }
 
 JNI_FUNCTION_DECLARATION(void,
-			 ContainerImpl_nativeService,
+			 Container_nativeService,
 			 JNIEnv* jni,
                          jclass,
                          jlong container_p,
 			 jint timeout) {
 
-  Container* container = reinterpret_cast<Container*>(container_p);
-  container->Service(timeout);
+  if (container_p) {
+    websocket::jni::Container* container = reinterpret_cast<websocket::jni::Container*>(container_p);
+    container->Service(timeout);    
+  }
 }
 
 JNI_FUNCTION_DECLARATION(void,
-			 ContainerImpl_nativeTriggerWritable,
-			 JNIEnv* jni,
-                         jclass,
-                         jlong container_p,
-			 jlong websocket_id) {
-
-  Container* container = reinterpret_cast<Container*>(container_p);
-  container->TriggerWritable(websocket_id);
-}
-
-JNI_FUNCTION_DECLARATION(void,
-			 ContainerImpl_nativeTriggerWorker,
+			 Container_nativeTriggerWorker,
 			 JNIEnv* jni,
                          jclass,
                          jlong container_p) {
 
-  Container* container = reinterpret_cast<Container*>(container_p);
-  container->TriggerWorker();
+  if (container_p) {
+    websocket::jni::Container* container = reinterpret_cast<websocket::jni::Container*>(container_p);
+    container->TriggerWorker();    
+  }
 }
 
 JNI_FUNCTION_DECLARATION(void,
-			 ContainerImpl_nativeClose,
+			 Container_nativeDispose,
 			 JNIEnv* jni,
                          jclass,
-                         jlong container_p,
-			 jlong websocket_id) {
+                         jlong container_p) {
 
-  Container* container = reinterpret_cast<Container*>(container_p);
-  container->Close(websocket_id);
+  if (container_p) {
+    websocket::jni::Container* container = reinterpret_cast<websocket::jni::Container*>(container_p);
+    delete container;
+  }
 }
 
 JNI_FUNCTION_DECLARATION(void,
-			 ContainerImpl_nativeSendMessage,
+			 Session_nativeSendMessage,
 			 JNIEnv* jni,
                          jclass,
-                         jlong container_p,
-			 jlong websocket_id,
+                         jlong session_p,
 			 jbyteArray message,
 			 jboolean binary) {
 
-  Container* container = reinterpret_cast<Container*>(container_p);
   jbyte* bytes = jni->GetByteArrayElements(message, nullptr);
   CHECK_EXCEPTION(jni) << "error during GetByteArrayElements";
-  size_t length = jni->GetArrayLength(message);
-  void* buffer = lws_malloc(length + LWS_SEND_BUFFER_PRE_PADDING + LWS_SEND_BUFFER_POST_PADDING,
-			    "container_jni");
-  void* data_buffer = (char *)buffer + LWS_SEND_BUFFER_PRE_PADDING;
-  std::memcpy(data_buffer, bytes, length);
+  if (session_p) {
+    websocket::Session *session = reinterpret_cast<websocket::Session*>(session_p);
+    size_t length = jni->GetArrayLength(message);
+    session->SendMessage(bytes, length, binary);
+  }
   jni->ReleaseByteArrayElements(message, bytes, JNI_ABORT);
   CHECK_EXCEPTION(jni) << "error during ReleaseByteArrayElements";  
-  container->SendMessage(websocket_id, data_buffer, length, binary);
-  lws_free(buffer);
 }
 
 JNI_FUNCTION_DECLARATION(void,
-			 ContainerImpl_nativeSendCloseMessage,
+			 Session_nativeClose,
 			 JNIEnv* jni,
                          jclass,
-                         jlong container_p,
-			 jlong websocket_id) {
+                         jlong session_p) {
 
-  Container* container = reinterpret_cast<Container*>(container_p);
-  container->SendCloseMessage(websocket_id);
+  if (session_p) {
+    websocket::Session *session = reinterpret_cast<websocket::Session*>(session_p);
+    session->Close();
+  }
 }
 
+JNI_FUNCTION_DECLARATION(jlong,
+			 Session_nativeGetSessionId,
+			 JNIEnv* jni,
+                         jclass,
+                         jlong session_p) {
+
+  if (session_p) {
+    websocket::Session *session = reinterpret_cast<websocket::Session*>(session_p);
+    return session->GetSessionId();
+  } else {
+    return 0;
+  }
+}
+  
+JNI_FUNCTION_DECLARATION(jlong,
+			 Session_nativeActiveSocket,
+			 JNIEnv* jni,
+                         jclass,
+                         jlong session_p) {
+
+  if (session_p) {
+    websocket::Session *session = reinterpret_cast<websocket::Session*>(session_p);
+    return session->GetActiveSocket();
+  } else {
+    return 0;
+  }
+}
+  
 }
 }
 

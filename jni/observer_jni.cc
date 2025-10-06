@@ -10,91 +10,96 @@
 
 #include "observer_jni.h"
 
-extern "C" {
-#include <libwebsockets.h>
-}
-
-#include <private-lib-core.h>
-#include <private-lib-tls.h>
-#include <private-lib-core-net.h>
-
 namespace websocket {
 namespace jni {
 
-ObserverJni::ObserverJni(JNIEnv* jni, jobject j_observer)
+Observer::Observer(JNIEnv* jni, jobject j_observer)
   : j_observer_global_(jni, j_observer),
     j_observer_class_(jni, GetObjectClass(jni, *j_observer_global_)),
-    j_on_connect_(GetMethodID(jni, *j_observer_class_, "onConnect", "(JJLjava/lang/String;[J)V")),
-    j_on_connect_error_(GetMethodID(jni, *j_observer_class_, "onConnectError", "(JJLjava/lang/String;[J)J")),
-    j_on_writable_(GetMethodID(jni, *j_observer_class_, "onWritable", "(JJ)Z")),
-    j_on_message_(GetMethodID(jni, *j_observer_class_, "onMessage", "(JJLjava/nio/ByteBuffer;Z)V")),
-    j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(JJ)V")),
-    j_on_timer_(GetMethodID(jni, *j_observer_class_, "onTimer", "(JJ)J")) {
+    j_on_connect_(GetMethodID(jni, *j_observer_class_, "onConnect", "(J[Lorg/libwebsockets/ConnectionStats;I)V")),
+    j_on_connect_error_(GetMethodID(jni, *j_observer_class_, "onConnectError", "(J[Lorg/libwebsockets/ConnectionStats;I)V")),
+    j_on_message_(GetMethodID(jni, *j_observer_class_, "onReceive", "(JLjava/nio/ByteBuffer;Z)V")),
+    j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(J)V")),
+    j_connection_stats_(jni->FindClass("Lorg/libwebsockets/ConnectionStats;")),
+    j_connection_stats_ctor_(jni->GetMethodID(j_connection_stats_, "<init>", "(IJJJJIIZLjava/lang/String;)V")) {
 }
 
-ObserverJni::~ObserverJni() {
+Observer::~Observer() {
 }  
 
-void ObserverJni::OnConnect(jlong session_id, jlong websocket_id, const char* ip, const jlong* stats, jsize stats_length) {
-
-  JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
-  ScopedLocalRefFrame local_ref_frame(env);
-  jstring j_ip = NativeToJavaString(env, std::string(ip));
-  jlongArray j_stats = env->NewLongArray(stats_length);
-  env->SetLongArrayRegion(j_stats, 0, stats_length, stats);
-  env->CallVoidMethod(*j_observer_global_, j_on_connect_, session_id, websocket_id, j_ip, j_stats);
-  CHECK_EXCEPTION(env) << "error during CallVoidMethod";
-}
-
-jlong ObserverJni::OnConnectError(jlong session_id, jlong websocket_id, const char* diagnostic, size_t length,
-                                 const jlong* stats, jsize stats_length) {
-
-  JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
-  ScopedLocalRefFrame local_ref_frame(env);
-  jstring j_diagnostic = NULL;
-  if (diagnostic) {
-    j_diagnostic = NativeToJavaString(env, std::string(diagnostic));
+jobjectArray Observer::GetConnectionStats(JNIEnv *env, websocket::Session *session)
+{
+  int count = session->GetSocketCount();
+  if (count <= 0) {
+    return nullptr;
   }
-  jlongArray j_stats = env->NewLongArray(stats_length);
-  env->SetLongArrayRegion(j_stats, 0, stats_length, stats);
-  jlong timeout = env->CallLongMethod(*j_observer_global_, j_on_connect_error_, session_id, websocket_id, j_diagnostic, j_stats);
-  CHECK_EXCEPTION(env) << "error during CallLongMethod";
-  return timeout;
-}
+  jobjectArray result = env->NewObjectArray(count, j_connection_stats_, nullptr);
+  for (int i = 0; i < count; i++) {
+    const websocket::ConnectionStats *stats = session->GetStats(i);
+    jstring ipAddr = env->NewStringUTF(stats->ip_addr);
 
-bool ObserverJni::OnWritable(jlong session_id, jlong websocket_id) {
-
-  JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
-  ScopedLocalRefFrame local_ref_frame(env);
-  bool result = env->CallBooleanMethod(*j_observer_global_, j_on_writable_, session_id, websocket_id);
-  CHECK_EXCEPTION(env) << "error during CallBooleanMethod";
+    // new ConnectionStats(int index, long dnsTime, long tcpConnectTime, long txnResponseTime,
+    //                     long tlsConnectTime, int connectCount, int lastError, boolean ipv6, String ipAddr);
+    jobject obj = env->NewObject(j_connection_stats_, j_connection_stats_ctor_, i, stats->dnsTime, stats->tcpConnectTime,
+                                 stats->txnResponseTime, stats->tlsConnectTime,
+                                 (jint) stats->connectCount, (jint) stats->lastError,
+                                 stats->ipv6, ipAddr);
+    env->SetObjectArrayElement(result, i, obj);
+    env->DeleteLocalRef(obj);
+    env->DeleteLocalRef(ipAddr);
+  }
   return result;
-}  
+}
 
-void ObserverJni::OnReceive(jlong session_id, jlong websocket_id, void* message, size_t length, bool binary) {
+void Observer::OnConnect(Session *session) {
 
   JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
   ScopedLocalRefFrame local_ref_frame(env);
+  jlong session_id = session->GetSessionId();
+  int active = session->GetActiveSocket();
+
+  jobjectArray j_stats = GetConnectionStats(env, session);
+  env->CallVoidMethod(*j_observer_global_, j_on_connect_, session_id, j_stats, active);
+  env->DeleteLocalRef(j_stats);
+  CHECK_EXCEPTION(env) << "error during CallVoidMethod";
+}
+
+long Observer::OnConnectError(Session *session, Error error) {
+
+  JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
+  ScopedLocalRefFrame local_ref_frame(env);
+  jlong session_id = session->GetSessionId();
+
+  jobjectArray j_stats = GetConnectionStats(env, session);
+  env->CallVoidMethod(*j_observer_global_, j_on_connect_error_, session_id, j_stats, (int)error);
+  env->DeleteLocalRef(j_stats);
+  session->Close();
+  CHECK_EXCEPTION(env) << "error during CallVoidMethod";
+  return -1;
+}
+
+void Observer::OnReceive(Session *session, void* message, size_t length, bool binary) {
+
+  JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
+  ScopedLocalRefFrame local_ref_frame(env);
+  jlong session_id = session->GetSessionId();
   jobject j_message = env->NewDirectByteBuffer(message, length);
-  env->CallVoidMethod(*j_observer_global_, j_on_message_, session_id, websocket_id, j_message, binary);
+  env->CallVoidMethod(*j_observer_global_, j_on_message_, session_id, j_message, binary);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-void ObserverJni::OnClose(jlong session_id, jlong websocket_id) {
+void Observer::OnClose(Session *session) {
 
   JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
   ScopedLocalRefFrame local_ref_frame(env);
-  env->CallVoidMethod(*j_observer_global_, j_on_close_, session_id, websocket_id);
+  jlong session_id = session->GetSessionId();
+  env->CallVoidMethod(*j_observer_global_, j_on_close_, session_id);
   CHECK_EXCEPTION(env) << "error during CallVoidMethod";
 }
 
-jlong ObserverJni::OnTimer(jlong session_id, jlong websocket_id) {
+void Observer::OnDestroy(Session *session) {
 
-  JNIEnv* env = webrtc::jni::AttachCurrentThreadIfNeeded();
-  ScopedLocalRefFrame local_ref_frame(env);
-  jlong timeout = env->CallLongMethod(*j_observer_global_, j_on_timer_, session_id, websocket_id);
-  CHECK_EXCEPTION(env) << "error during CallLongMethod";
-  return timeout;
+  delete this;
 }
 
 }  // namespace jni
