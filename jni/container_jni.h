@@ -28,8 +28,8 @@ public:
   struct websocket::ProxyDescriptor *GetProxies(JNIEnv *env, jobjectArray j_proxies);
 
 private:
-  jclass j_proxy_class_;
-  jclass j_connection_stats_class_;
+  const ScopedGlobalRef<jclass> j_proxy_class_;
+  const ScopedGlobalRef<jclass> j_connection_stats_class_;
   jfieldID f_proxy_address_;
   jfieldID f_proxy_port_;
   jfieldID f_proxy_method_;

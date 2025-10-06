@@ -45,7 +45,7 @@ class Observer : public SessionObserver{
   const jmethodID j_on_connect_error_;
   const jmethodID j_on_message_;
   const jmethodID j_on_close_;
-  const jclass j_connection_stats_;
+  const ScopedGlobalRef<jclass> j_connection_stats_;
   const jmethodID j_connection_stats_ctor_;
 
   jobjectArray GetConnectionStats(JNIEnv *env, websocket::Session *session);

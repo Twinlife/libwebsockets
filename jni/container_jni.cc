@@ -41,12 +41,12 @@ static void emit_log(int level, const char* msg) {
 }
 
 Container::Container(JNIEnv* jni) :
-  j_proxy_class_(jni->FindClass("Lorg/libwebsockets/SocketProxyDescriptor;")),
-  j_connection_stats_class_(jni->FindClass("Lorg/libwebsockets/ConnectionStats;"))
+  j_proxy_class_(jni, jni->FindClass("org/libwebsockets/SocketProxyDescriptor")),
+  j_connection_stats_class_(jni, jni->FindClass("org/libwebsockets/ConnectionStats"))
 {
-  f_proxy_port_ = jni->GetFieldID(j_proxy_class_, "proxyPort", "I");
-  f_proxy_method_ = jni->GetFieldID(j_proxy_class_, "method", "I");
-  f_proxy_address_ = jni->GetFieldID(j_proxy_class_, "proxyAddress", "Ljava/lang/String;");
+  f_proxy_port_ = jni->GetFieldID(*j_proxy_class_, "proxyPort", "I");
+  f_proxy_method_ = jni->GetFieldID(*j_proxy_class_, "method", "I");
+  f_proxy_address_ = jni->GetFieldID(*j_proxy_class_, "proxyAddress", "Ljava/lang/String;");
 }
 
 struct websocket::ProxyDescriptor *Container::GetProxies(JNIEnv *env, jobjectArray j_proxies)

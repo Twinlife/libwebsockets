@@ -20,8 +20,8 @@ Observer::Observer(JNIEnv* jni, jobject j_observer)
     j_on_connect_error_(GetMethodID(jni, *j_observer_class_, "onConnectError", "(J[Lorg/libwebsockets/ConnectionStats;I)V")),
     j_on_message_(GetMethodID(jni, *j_observer_class_, "onReceive", "(JLjava/nio/ByteBuffer;Z)V")),
     j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(J)V")),
-    j_connection_stats_(jni->FindClass("Lorg/libwebsockets/ConnectionStats;")),
-    j_connection_stats_ctor_(jni->GetMethodID(j_connection_stats_, "<init>", "(IJJJJIIZLjava/lang/String;)V")) {
+    j_connection_stats_(jni, jni->FindClass("org/libwebsockets/ConnectionStats")),
+    j_connection_stats_ctor_(jni->GetMethodID(*j_connection_stats_, "<init>", "(IJJJJIIZLjava/lang/String;)V")) {
 }
 
 Observer::~Observer() {
@@ -33,14 +33,14 @@ jobjectArray Observer::GetConnectionStats(JNIEnv *env, websocket::Session *sessi
   if (count <= 0) {
     return nullptr;
   }
-  jobjectArray result = env->NewObjectArray(count, j_connection_stats_, nullptr);
+  jobjectArray result = env->NewObjectArray(count, *j_connection_stats_, nullptr);
   for (int i = 0; i < count; i++) {
     const websocket::ConnectionStats *stats = session->GetStats(i);
     jstring ipAddr = env->NewStringUTF(stats->ip_addr);
 
     // new ConnectionStats(int index, long dnsTime, long tcpConnectTime, long txnResponseTime,
     //                     long tlsConnectTime, int connectCount, int lastError, boolean ipv6, String ipAddr);
-    jobject obj = env->NewObject(j_connection_stats_, j_connection_stats_ctor_, i, stats->dnsTime, stats->tcpConnectTime,
+    jobject obj = env->NewObject(*j_connection_stats_, j_connection_stats_ctor_, i, stats->dnsTime, stats->tcpConnectTime,
                                  stats->txnResponseTime, stats->tlsConnectTime,
                                  (jint) stats->connectCount, (jint) stats->lastError,
                                  stats->ipv6, ipAddr);
