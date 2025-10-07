@@ -33,6 +33,7 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 	if (webSocket) {
 	    NSArray<TLConnectionStats *> *stats = [webSocket getStats];
             [webSocket.delegate onConnectError:webSocket stats:stats error:error];
+            webSocket.session = nil;
 	}
 	session->Close();
 	return -1;
@@ -51,6 +52,7 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
         TLWebSocket *webSocket = socket_;
 	if (webSocket) {
 	    [webSocket.delegate onClose:webSocket];
+            webSocket.session = nil;
 	}
     }
 
@@ -132,8 +134,8 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 
     websocket::Session* s = self.session;
     self.session = nil;
-    lwsl_notice("Close %ld", s ? s->GetSessionId() : -1);
     if (s) {
+        lwsl_notice("Close %ld", s ? s->GetSessionId() : -1);
         s->Close();
     }
 }
@@ -160,8 +162,8 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 
     websocket::Session *s = self.session;
     self.session = nil;
-    lwsl_notice("dealloc %ld", s ? s->GetSessionId() : -1);
     if (s) {
+        lwsl_notice("dealloc %ld", s ? s->GetSessionId() : -1);
         s->Close();
     }
 }
@@ -175,7 +177,6 @@ RTC_OBJC_EXPORT
 
     self = [super init];
     if (self) {
-        _container = new websocket::Container();
 	int l = LLL_ERR | LLL_WARN;
 	if (level >= 1) {
 	    l |= LLL_NOTICE;
@@ -187,6 +188,7 @@ RTC_OBJC_EXPORT
 	    }
 	}
         lws_set_log_level(l, 0);
+        _container = new websocket::Container();
     }
     return self;
 }
@@ -233,6 +235,15 @@ RTC_OBJC_EXPORT
     websocket::Container *container = self.container;
     if (container) {
         container->TriggerWorker();
+    }
+}
+
+- (void)dealloc {
+
+    websocket::Container *container = self.container;
+    self.container = nil;
+    if (container) {
+        delete container;
     }
 }
 
