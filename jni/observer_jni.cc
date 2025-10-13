@@ -40,10 +40,10 @@ jobjectArray Observer::GetConnectionStats(JNIEnv *env, websocket::Session *sessi
 
     // new ConnectionStats(int index, long dnsTime, long tcpConnectTime, long txnResponseTime,
     //                     long tlsConnectTime, int connectCount, int lastError, boolean ipv6, String ipAddr);
-    jobject obj = env->NewObject(*j_connection_stats_, j_connection_stats_ctor_, i, stats->dnsTime, stats->tcpConnectTime,
-                                 stats->txnResponseTime, stats->tlsConnectTime,
-                                 (jint) stats->connectCount, (jint) stats->lastError,
-                                 stats->ipv6, ipAddr);
+    jobject obj = env->NewObject(*j_connection_stats_, j_connection_stats_ctor_, i, (jlong) stats->dnsTime,
+                                 (jlong) stats->tcpConnectTime, (jlong) stats->txnResponseTime,
+                                 (jlong) stats->tlsConnectTime, (jint) stats->connectCount,
+                                 (jint) stats->lastError, (jboolean) stats->ipv6, ipAddr);
     env->SetObjectArrayElement(result, i, obj);
     env->DeleteLocalRef(obj);
     env->DeleteLocalRef(ipAddr);
