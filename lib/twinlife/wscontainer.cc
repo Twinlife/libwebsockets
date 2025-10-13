@@ -531,26 +531,35 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
 
 int Session::OnWritable(struct lws *wsi) {
 
-  // The lws_write() can be called only from the LWS_CALLBACK_CLIENT_WRITEABLE callback.
-  while (1) {
-    struct Packet *pkt;
+  // The lws_write() can be called only from the LWS_CALLBACK_CLIENT_WRITEABLE callback,
+  // and there must be only one call to lws_write() as per the READMEs/README.coding.md
+  // description.
+  struct Packet *pkt;
+  bool hasMore;
 
-    pthread_mutex_lock(&lock_);
-    pkt = packets_;
-    if (pkt) {
-      packets_ = pkt->next;
-    }
-    pthread_mutex_unlock(&lock_);
-    if (!pkt) {
-      return 0;
-    }
-
-    int result = lws_write(wsi, &pkt->buffer[LWS_SEND_BUFFER_PRE_PADDING], pkt->length, pkt->binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT);
-    free(pkt);
-    if (result < 0) {
-      return -1;
-    }	
+  pthread_mutex_lock(&lock_);
+  pkt = packets_;
+  if (pkt) {
+    packets_ = pkt->next;
   }
+  hasMore = packets_ != nullptr;
+  pthread_mutex_unlock(&lock_);
+  if (!pkt) {
+    return 0;
+  }
+
+  int result = lws_write(wsi, &pkt->buffer[LWS_SEND_BUFFER_PRE_PADDING], pkt->length, pkt->binary ? LWS_WRITE_BINARY : LWS_WRITE_TEXT);
+  lwsl_debug("%s: lws_write %d return %d", __func__, pkt->length, result);
+
+  free(pkt);
+  if (result < 0) {
+    return -1;	
+  }
+
+  if (hasMore) {
+    lws_callback_on_writable(wsi);
+  }
+  return 0;
 }
 
 void Session::OnReceive(struct lws *wsi, void *in, size_t len) {
