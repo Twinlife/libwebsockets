@@ -23,7 +23,6 @@ rtc_library("libwebsockets") {
     "LWS_HAVE_STRERROR",
     "LWS_HAVE_STRINGS_H",
     "LWS_HAVE_STRING_H",
-    "LWS_HAVE_SYS_PRCTL_H",
     "LWS_HAVE_SYS_SOCKET_H",
     "LWS_HAVE_SYS_STAT_H",
     "LWS_HAVE_SYS_TYPES_H",
@@ -42,7 +41,6 @@ rtc_library("libwebsockets") {
     "LWS_WITH_FILE_OPS",
     "LWS_WITH_HTTP_BASIC_AUTH",
     "LWS_WITH_HTTP_UNCOMMON_HEADERS",
-    "LWS_WITH_NETLINK",
     "LWS_WITH_NETWORK",
     "LWS_WITH_CLIENT",
     "LWS_WITHOUT_SERVER",
@@ -74,10 +72,7 @@ rtc_library("libwebsockets") {
     "LWS_IPV6",
     "LWS_WITH_IPV6",
     "LWS_MAX_SMP=1",
-    "LWS_BUILTIN_GETIFADDRS",
     "LWS_HAVE_OPENSSL_ECDH_H",
-    "LWS_HAVE_PIPE2",
-    "LWS_HAVE_EVENTFD",
     "LWS_HAVE_PTHREAD_H",
     "LWS_HAVE_RSA_SET0_KEY",
     "LWS_HAVE_SSL_CTX_get0_certificate",
@@ -113,14 +108,11 @@ rtc_library("libwebsockets") {
     "lib/event-libs",
     "lib/system/metrics",
     "lib/twinlife",
-    "$java_home/include",
-    "$java_home/include/linux",
+    #"$java_home/include",
+    #"$java_home/include/linux",
   ]
     
   sources = [
-    "jni/container_jni.cc",
-    "jni/jni_helpers.cc",
-    "jni/observer_jni.cc",
     "lib/twinlife/wscontainer.cc",
     "lib/plat/unix/unix-caps.c",
     "lib/plat/unix/unix-misc.c",
@@ -148,7 +140,6 @@ rtc_library("libwebsockets") {
     "lib/misc/base64-decode.c",
     "lib/misc/lws-ring.c",
     "lib/misc/dir.c",
-    "lib/misc/getifaddrs.c",
     "lib/misc/lwsac/lwsac.c",
     "lib/misc/lwsac/cached-file.c",
     "lib/misc/sha-1.c",
@@ -190,8 +181,6 @@ rtc_library("libwebsockets") {
     "lib/core-net/client/connect3.c",
     "lib/core-net/client/connect4.c",
     "lib/core-net/client/sort-dns.c",
-    "lib/core-net/route.c",
-    "lib/roles/netlink/ops-netlink.c",
 
 # Async DNS (main branch only and produces some crash)
 #    "lib/roles/http/date.c",
@@ -204,6 +193,47 @@ rtc_library("libwebsockets") {
 #    "lib/system/async-dns/async-dns.c",
 #    "lib/system/async-dns/async-dns-parse.c",
 ]
+ if (is_ios) {
+    sources += [
+      "lib/twinlife/TLWebSocket.mm",
+    ]
+    defines += [
+      "LWS_DETECTED_PLAT_IOS",
+    ]
+ }
+ if (is_android) {
+    sources += [
+      "jni/container_jni.cc",
+      "jni/jni_helpers.cc",
+      "jni/observer_jni.cc",
+      "lib/misc/getifaddrs.c",
+      "lib/core-net/route.c",
+      "lib/roles/netlink/ops-netlink.c",
+    ]
+    defines += [
+      "LWS_BUILTIN_GETIFADDRS",
+      "LWS_HAVE_SYS_PRCTL_H",
+      "LWS_WITH_NETLINK",
+      "LWS_HAVE_PIPE2",
+      "LWS_HAVE_EVENTFD",
+    ]
+ }
+ if (is_linux) {
+    # Same as Android but without getifaddrs
+    sources += [
+      "jni/container_jni.cc",
+      "jni/jni_helpers.cc",
+      "jni/observer_jni.cc",
+      "lib/core-net/route.c",
+      "lib/roles/netlink/ops-netlink.c",
+    ]
+    defines += [
+      "LWS_HAVE_SYS_PRCTL_H",
+      "LWS_WITH_NETLINK",
+      "LWS_HAVE_PIPE2",
+      "LWS_HAVE_EVENTFD",
+    ]
+ }
  deps = [
     "//third_party/boringssl",
     "//rtc_base:ssl"
