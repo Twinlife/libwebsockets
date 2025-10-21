@@ -187,6 +187,8 @@ namespace websocket {
 
     // Connect the websocket according to its configuration and setup the given timeout.
     int Connect(WebSocket& webSocket, long timeout);
+
+    void DoClose();
   };
 
   class Container {
@@ -208,9 +210,12 @@ namespace websocket {
     lws_context_creation_info info_;
     lws_context* context_;
     std::vector<Session *> toDelete_;
+    std::vector<Session *> toClose_;
 
     void DeleteSessions();
+    void CloseSessions();
     void Destroy(Session *session);
+    void Close(Session *session);
   };
 
 }  // namespace websocket

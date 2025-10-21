@@ -341,6 +341,11 @@ bool Session::SendMessage(const void* buffer, size_t length, bool binary) {
 
 void Session::Close() {
 
+  container_.Close(this);
+}
+
+void Session::DoClose() {
+
   struct lws *toClose[NB_SOCKETS];
   int closeCount = 0;
   struct Packet *pkt;
@@ -795,6 +800,7 @@ Container::Container() {
 
 Container::~Container() {
 
+  CloseSessions();
   DeleteSessions();
   lws_context_destroy(context_);
 }  
@@ -807,6 +813,19 @@ void Container::DeleteSessions() {
     toDelete_.pop_back();
     pthread_mutex_unlock(&lock_);
     delete session;
+    pthread_mutex_lock(&lock_);
+  }
+  pthread_mutex_unlock(&lock_);
+}
+
+void Container::CloseSessions() {
+
+  pthread_mutex_lock(&lock_);
+  while (!toClose_.empty()) {
+    Session *session = toClose_.back();
+    toClose_.pop_back();
+    pthread_mutex_unlock(&lock_);
+    session->DoClose();
     pthread_mutex_lock(&lock_);
   }
   pthread_mutex_unlock(&lock_);
@@ -849,7 +868,9 @@ void Container::Service(int timeout) {
 
   lwsl_debug("%s: service with timeout=%d ms\n", __func__, timeout);
   if (context_) {
+    CloseSessions();
     lws_service(context_, timeout);
+    CloseSessions();
     DeleteSessions();
   }
 }
@@ -859,6 +880,19 @@ void Container::Destroy(Session *session) {
   pthread_mutex_lock(&lock_);
   toDelete_.push_back(session);
   pthread_mutex_unlock(&lock_);
+}
+
+void Container::Close(Session *session) {
+
+  pthread_mutex_lock(&lock_);
+  if (std::find(toClose_.begin(), toClose_.end(), session) == toClose_.end()) {
+    toClose_.push_back(session);
+  }
+  pthread_mutex_unlock(&lock_);
+
+  if (context_) {
+    lws_cancel_service(context_);
+  }
 }
 
 void Container::TriggerWorker() {
