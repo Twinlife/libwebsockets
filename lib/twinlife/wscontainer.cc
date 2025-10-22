@@ -339,9 +339,23 @@ bool Session::SendMessage(const void* buffer, size_t length, bool binary) {
   }
 }
 
-void Session::Close() {
+bool Session::Close() {
 
+  bool hasWebSocket = false;
+
+  // If at least one wsi is active, we will call OnClose() or OnConnectError().
+  // If every wsi was terminated, we return false to inform the caller that
+  // no callback will be executed.
+  pthread_mutex_lock(&lock_);
+  for (int i = 0; i < socketCount_; i++) {
+    if (sockets_[i].wsi_) {
+      hasWebSocket = true;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&lock_);
   container_.Close(this);
+  return hasWebSocket;
 }
 
 void Session::DoClose() {
@@ -420,7 +434,6 @@ void Session::OnConnect(struct lws *wsi) {
   }
 
   observer_.OnConnect(this);
-  //  lws_callback_on_writable(wsi);
 }
 
 bool startsWith(const char *message, const char* prefix) {

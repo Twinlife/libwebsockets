@@ -47,6 +47,7 @@ Container::Container(JNIEnv* jni) :
   f_proxy_port_ = jni->GetFieldID(*j_proxy_class_, "proxyPort", "I");
   f_proxy_method_ = jni->GetFieldID(*j_proxy_class_, "method", "I");
   f_proxy_address_ = jni->GetFieldID(*j_proxy_class_, "proxyAddress", "Ljava/lang/String;");
+  f_proxy_path_ = jni->GetFieldID(*j_proxy_class_, "proxyPath", "Ljava/lang/String;");
 }
 
 struct websocket::ProxyDescriptor *Container::GetProxies(JNIEnv *env, jobjectArray j_proxies)
@@ -62,22 +63,32 @@ struct websocket::ProxyDescriptor *Container::GetProxies(JNIEnv *env, jobjectArr
   }
   for (jsize i = 0; i < proxyCount; i++) {
     struct websocket::ProxyDescriptor *current = &result[i];
-    jobject obj = env->GetObjectArrayElement(j_proxies, i);
-
-    jstring jstr = (jstring) env->GetObjectField(obj, f_proxy_address_);
-    if (jstr) {
-      const char *p = env->GetStringUTFChars(jstr, NULL);
-      current->proxy_address = strdup(p);
-      env->ReleaseStringUTFChars(jstr, p);
-    } else {
-      current->proxy_address = nullptr;
-    }
     current->proxy_username = nullptr;
     current->proxy_password = nullptr;
+    current->proxy_address = nullptr;
     current->proxy_path = nullptr;
-    current->proxy_port = env->GetIntField(obj, f_proxy_port_);
-    current->method = env->GetIntField(obj, f_proxy_method_);
-    env->DeleteLocalRef(obj);
+    current->proxy_port = 0;
+    current->method = 0;
+
+    jobject obj = env->GetObjectArrayElement(j_proxies, i);
+    if (obj) {
+      jstring jstr = (jstring) env->GetObjectField(obj, f_proxy_address_);
+      if (jstr) {
+        const char *p = env->GetStringUTFChars(jstr, NULL);
+        current->proxy_address = strdup(p);
+        env->ReleaseStringUTFChars(jstr, p);
+      }
+      current->proxy_port = env->GetIntField(obj, f_proxy_port_);
+      current->method = env->GetIntField(obj, f_proxy_method_);
+
+      jstr = (jstring) env->GetObjectField(obj, f_proxy_path_);
+      if (jstr) {
+        const char *p = env->GetStringUTFChars(jstr, NULL);
+        current->proxy_path = strdup(p);
+        env->ReleaseStringUTFChars(jstr, p);
+      }
+      env->DeleteLocalRef(obj);
+    }
   }
   return result;
 }
@@ -138,6 +149,9 @@ JNI_FUNCTION_DECLARATION(jlong,
       for (int i = 0; i < proxyCount; i++) {
         if (proxies[i].proxy_address) {
           free((void*)proxies[i].proxy_address);
+        }
+        if (proxies[i].proxy_path) {
+          free((void*)proxies[i].proxy_path);          
         }
       }
       free(proxies);
@@ -210,7 +224,7 @@ JNI_FUNCTION_DECLARATION(void,
   CHECK_EXCEPTION(jni) << "error during ReleaseByteArrayElements";  
 }
 
-JNI_FUNCTION_DECLARATION(void,
+JNI_FUNCTION_DECLARATION(jboolean,
 			 Session_nativeClose,
 			 JNIEnv* jni,
                          jclass,
@@ -218,7 +232,9 @@ JNI_FUNCTION_DECLARATION(void,
 
   if (session_p) {
     websocket::Session *session = reinterpret_cast<websocket::Session*>(session_p);
-    session->Close();
+    return (jboolean) session->Close();
+  } else {
+    return false;
   }
 }
 

@@ -58,10 +58,12 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 
     void OnDestroy(Session *session) override {
         lwsl_notice("OnDestroy %ld", session->GetSessionId());
+
+        socket_ = nil;
     }
 
   private:
-    __weak TLWebSocket *socket_;
+    TLWebSocket *socket_;
 };
 }
 
@@ -130,14 +132,15 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
     return false;
 }
 
-- (void)close {
+- (BOOL)close {
 
     websocket::Session* s = self.session;
-    self.session = nil;
-    if (s) {
-        lwsl_notice("Close %ld", s ? s->GetSessionId() : -1);
-        s->Close();
+    if (!s) {
+        return NO;
     }
+    self.session = nil;
+    lwsl_notice("Close %ld", s ? s->GetSessionId() : -1);
+    return s->Close();
 }
 
 - (nonnull NSArray<TLConnectionStats *> *)getStats {

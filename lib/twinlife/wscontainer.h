@@ -148,7 +148,7 @@ namespace websocket {
     bool SendMessage(const void* buffer, size_t length, bool binary);
 
     // Called by the application to close the websocket session and all its connections.
-    void Close();
+    bool Close();
 
     long GetSessionId() {
       return sessionId_;

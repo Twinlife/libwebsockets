@@ -33,6 +33,7 @@ private:
   jfieldID f_proxy_address_;
   jfieldID f_proxy_port_;
   jfieldID f_proxy_method_;
+  jfieldID f_proxy_path_;
 };
 
 }  // namespace jni

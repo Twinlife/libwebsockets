@@ -73,7 +73,7 @@ RTC_OBJC_EXPORT
 
 - (BOOL)sendWithMessage:(nonnull NSData *)buffer binary:(BOOL)binary;
 
-- (void)close;
+- (BOOL)close;
 
 - (long)sessionId;
 
