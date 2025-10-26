@@ -12,6 +12,7 @@
 
 #include <private-lib-core.h>
 #include <private-lib-tls.h>
+#include <algorithm>
 
 #include "wscontainer.h"
 
@@ -209,45 +210,56 @@ void Session::CreateSocket(const struct ProxyDescriptor *proxy) {
   struct lws_vhost* vhost = lws_create_vhost(container_.context_, &container_.info_);
   if (vhost) {
     if (proxy && proxy->proxy_address) {
-	strncpy(vhost->http.http_proxy_address, proxy->proxy_address, sizeof(vhost->http.http_proxy_address) - 1);
-	vhost->http.http_proxy_address[sizeof(vhost->http.http_proxy_address) - 1] = '\0';
+        strncpy(vhost->http.http_proxy_address, proxy->proxy_address, sizeof(vhost->http.http_proxy_address) - 1);
+        vhost->http.http_proxy_address[sizeof(vhost->http.http_proxy_address) - 1] = '\0';
 
         webSocket.proxy_address_ = vhost->http.http_proxy_address;
         webSocket.proxy_port_ = proxy->proxy_port;
         webSocket.method_ = proxy->method;
         if (proxy->method & CONFIG_SNI_PASSTHROUGH) {
           vhost->http.http_proxy_port = 0;
+          if (proxy->proxy_path && proxy->method & CONFIG_SNI_OVERRIDE) {
+            vhost->options |= LWS_CLIENT_TLS_SNI_OVERRIDE;
+            strncpy(vhost->hostname, proxy->proxy_path, sizeof(vhost->hostname) - 1);
+            vhost->hostname[sizeof(vhost->hostname) - 1] = '\0';
+          }
         } else {
           vhost->http.http_proxy_port = proxy->proxy_port;
         }
-	if (proxy->proxy_username && proxy->proxy_password) {
-	  char *auth_token = (char *)lws_malloc(strlen(proxy->proxy_username) + strlen(proxy->proxy_password) + 2,
-						"container");
-	  strcpy(auth_token, proxy->proxy_username);
-	  strcat(auth_token, ":");
-	  strcat(auth_token, proxy->proxy_password);
-	  //std::string base64_auth_token = rtc::Base64::Encode(auth_token);
-	  //strncpy(vhost->proxy_basic_auth_token, base64_auth_token.c_str(),
-          //	  sizeof(vhost->proxy_basic_auth_token) - 1);
-	  vhost->proxy_basic_auth_token[sizeof(vhost->proxy_basic_auth_token) - 1] = '\0';
-	  lws_free(auth_token);
-	  vhost->proxy_path[0] = '\0';
+        if (proxy->method & CONFIG_DISABLE_SNI) {
+          vhost->options |= LWS_CLIENT_TLS_WITHOUT_SNI_EXT;
+        }
+        if (proxy->proxy_username && proxy->proxy_password) {
+          char *auth_token = (char *)lws_malloc(strlen(proxy->proxy_username) + strlen(proxy->proxy_password) + 2,
+                                                "container");
+          strcpy(auth_token, proxy->proxy_username);
+          strcat(auth_token, ":");
+          strcat(auth_token, proxy->proxy_password);
+          //std::string base64_auth_token = rtc::Base64::Encode(auth_token);
+          //strncpy(vhost->proxy_basic_auth_token, base64_auth_token.c_str(),
+          //      sizeof(vhost->proxy_basic_auth_token) - 1);
+          vhost->proxy_basic_auth_token[sizeof(vhost->proxy_basic_auth_token) - 1] = '\0';
+          lws_free(auth_token);
+          vhost->proxy_path[0] = '\0';
           lwsl_debug("Connect through proxy %s port %d token %s\n", vhost->http.http_proxy_address, vhost->http.http_proxy_port, auth_token);
-	} else if (proxy->proxy_path) {
-	  vhost->proxy_basic_auth_token[0] = '\0';
-	  strncpy(vhost->proxy_path, proxy->proxy_path, sizeof(vhost->proxy_path) - 1);
-	  vhost->proxy_path[sizeof(vhost->proxy_path) - 1] = '\0';
+        } else if (proxy->proxy_path && vhost->http.http_proxy_port != 0) {
+          vhost->proxy_basic_auth_token[0] = '\0';
+          strncpy(vhost->proxy_path, proxy->proxy_path, sizeof(vhost->proxy_path) - 1);
+          vhost->proxy_path[sizeof(vhost->proxy_path) - 1] = '\0';
           lwsl_debug("Connect through proxy %s port %d path %s\n", vhost->http.http_proxy_address, vhost->http.http_proxy_port, vhost->proxy_path);
-	} else {
-	  vhost->proxy_basic_auth_token[0] = '\0';
-	  vhost->proxy_path[0] = '\0';
-	}
+        } else {
+          vhost->proxy_basic_auth_token[0] = '\0';
+          vhost->proxy_path[0] = '\0';
+        }
       
     } else {
       vhost->http.http_proxy_port = 0;
       vhost->http.http_proxy_address[0] = '\0';
       vhost->proxy_basic_auth_token[0] = '\0';
       vhost->proxy_path[0] = '\0';
+      if (method_ & CONFIG_DISABLE_SNI) {
+        vhost->options |= LWS_CLIENT_TLS_WITHOUT_SNI_EXT;
+      }
     }
   }
 
@@ -320,7 +332,7 @@ bool Session::SendMessage(const void* buffer, size_t length, bool binary) {
       packets_ = pkt;
     } else {
       while (next->next) {
-	next = next->next;
+        next = next->next;
       }
       next->next = pkt;
     }
@@ -530,9 +542,9 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
   }
   pthread_mutex_unlock(&lock_);
 
-  lwsl_notice("OnConnectError %ld.%d dns=%d tcp=%d tls=%d txn=%d error=%d",
+  lwsl_notice("OnConnectError %ld.%d dns=%d tcp=%d tls=%d txn=%d error=%d (%s)",
               sessionId_, failedSocket, cm.ciu_dns, cm.ciu_sockconn,
-              cm.ciu_tls, cm.ciu_txn_resp, error);
+              cm.ciu_tls, cm.ciu_txn_resp, error, message);
 
   lws_conmon_release(&cm);
 
@@ -571,7 +583,7 @@ int Session::OnWritable(struct lws *wsi) {
 
   free(pkt);
   if (result < 0) {
-    return -1;	
+    return -1;  
   }
 
   if (hasMore) {
@@ -683,6 +695,8 @@ int Session::OnVerifyCert(struct lws *wsi, X509_STORE_CTX *x509_store_ctx, int l
         }
 
         if (common_name && bytes && length > 0) {
+          lwsl_notice("Received certificate signed by %s", common_name);
+
           // Build the SHA-256 of the public key.
           unsigned int digest_len;
           unsigned char digest[EVP_MAX_MD_SIZE];
@@ -844,7 +858,8 @@ void Container::CloseSessions() {
   pthread_mutex_unlock(&lock_);
 }
 
-Session* Container::CreateWebSocket(SessionObserver *observer, long sessionId, int port, const char* host, const char* path, int method, long timeout,
+Session* Container::CreateWebSocket(SessionObserver *observer, long sessionId, int port, const char* host,
+                                    const char* customSNI, const char* path, int method, long timeout,
                                     const struct ProxyDescriptor *proxies, int proxyCount) {
   if (!context_ || proxyCount < 0) {
     return nullptr;
@@ -859,6 +874,15 @@ Session* Container::CreateWebSocket(SessionObserver *observer, long sessionId, i
   }
 
   session->CreateSocket(nullptr);
+  // Use a custom SNI name for the direct websocket TLS connection.
+  if (customSNI) {
+    struct lws_vhost *vhost = session->sockets_[0].vhost_;
+    if (vhost) {
+      vhost->options |= LWS_CLIENT_TLS_SNI_OVERRIDE;
+      strncpy(vhost->hostname, customSNI, sizeof(vhost->hostname) - 1);
+      vhost->hostname[sizeof(vhost->hostname) - 1] = '\0';
+    }
+  }
   for (int i = 0; i < proxyCount; i++) {
     session->CreateSocket(&proxies[i]);
   }

@@ -123,6 +123,7 @@ JNI_FUNCTION_DECLARATION(jlong,
 			 jlong sessionId,
 			 jint port,
 			 jstring j_host,
+			 jstring j_customSNI,
 			 jstring j_path,
 			 jint method,
                          jlong timeout,
@@ -135,6 +136,11 @@ JNI_FUNCTION_DECLARATION(jlong,
     path = jni->GetStringUTFChars(j_path, NULL);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
+  const char* customSNI = NULL;
+  if (!IsNull(jni, j_customSNI)) {
+    customSNI = jni->GetStringUTFChars(j_customSNI, NULL);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
 
   jlong websocket_id = 0;
   if (container_p) {
@@ -143,7 +149,7 @@ JNI_FUNCTION_DECLARATION(jlong,
     websocket::jni::Observer *observer = new websocket::jni::Observer(jni, j_observer);
     int proxyCount = jni->GetArrayLength(j_proxies);
     struct websocket::ProxyDescriptor *proxies = container->GetProxies(jni, j_proxies);
-    websocket::Session *session = container->CreateWebSocket(observer, sessionId, port, host, path, method, timeout, proxies, proxyCount);
+    websocket::Session *session = container->CreateWebSocket(observer, sessionId, port, host, customSNI, path, method, timeout, proxies, proxyCount);
     websocket_id = webrtc::jni::jlongFromPointer(session);
     if (proxies) {
       for (int i = 0; i < proxyCount; i++) {
@@ -163,6 +169,10 @@ JNI_FUNCTION_DECLARATION(jlong,
   }
   if (path) {
     jni->ReleaseStringUTFChars(j_path, path);
+    CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
+  }
+  if (customSNI) {
+    jni->ReleaseStringUTFChars(j_customSNI, customSNI);
     CHECK_EXCEPTION(jni) << "error during GetStringUTFChars";
   }
   return websocket_id;

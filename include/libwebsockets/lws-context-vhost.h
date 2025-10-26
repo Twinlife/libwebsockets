@@ -242,6 +242,13 @@
 #define LWS_SERVER_OPTION_DISABLE_TLS_SESSION_CACHE		 (1ll << 39)
 	/**< (VHOST) Disallow use of client tls caching (on by default) */
 
+/* --twinlife-- 2025-10-24: add option to disable sending the SNI in the TLS ClientHello */
+#define LWS_CLIENT_TLS_WITHOUT_SNI_EXT                           (1ll << 40)
+	/**< (VHOST) Don't send the SNI in ClientHello */
+
+#define LWS_CLIENT_TLS_SNI_OVERRIDE                              (1ll << 41)
+	/**< (VHOST) Override the SNI to send in ClientHello and send a custom value */
+/* --twinlife-- 2025-10-24 */
 
 	/****** add new things just above ---^ ******/
 

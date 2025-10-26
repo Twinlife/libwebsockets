@@ -361,7 +361,15 @@ lws_ssl_client_bio_create(struct lws *wsi)
 #endif
 #else
 #ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
-	SSL_set_tlsext_host_name(wsi->tls.ssl, hostname);
+	/* --twinlife-- 2025-10-24: disable sending the SNI in the TLS ClientHello if option is set */
+	if (LWS_CLIENT_TLS_SNI_OVERRIDE_ENABLED(wsi->a.vhost)) {
+	    SSL_set_tlsext_host_name(wsi->tls.ssl, wsi->a.vhost->hostname);
+	} else if (!LWS_CLIENT_TLS_SNI_DISABLED(wsi->a.vhost)) {
+	    SSL_set_tlsext_host_name(wsi->tls.ssl, hostname);
+	} else {
+	  lwsl_debug("Not sending SNI with '%s'\n", hostname);
+	}
+	/* --twinlife-- 2025-10-24 */
 #endif
 #endif
 

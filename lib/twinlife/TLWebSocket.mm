@@ -204,7 +204,7 @@ RTC_OBJC_EXPORT
     }
 }
 
-- (nullable TLWebSocket *)createWithSession:(int64_t)sessionId delegate:(id<TLWebSocketDelegate>)delegate port:(int)port host:(nonnull NSString*)host path:(nullable NSString *)path method:(int)method timeout:(int)timeout proxies:(nullable NSArray<TLSocketProxyDescriptor *> *)proxies {
+- (nullable TLWebSocket *)createWithSession:(int64_t)sessionId delegate:(id<TLWebSocketDelegate>)delegate port:(int)port host:(nonnull NSString*)host customSNI:(nullable NSString *)customSNI path:(nullable NSString *)path method:(int)method timeout:(int)timeout proxies:(nullable NSArray<TLSocketProxyDescriptor *> *)proxies {
 
     websocket::Container *container = self.container;
     if (!container) {
@@ -224,7 +224,7 @@ RTC_OBJC_EXPORT
 
     TLWebSocket *webSocket = [[TLWebSocket alloc] initWithDelegate:delegate];
     websocket::SessionObserverDelegateAdapter *observer = [webSocket getObserver];
-    websocket::Session* session = container->CreateWebSocket(observer, sessionId, port, [host UTF8String], [path UTF8String], method, timeout, proxyDescriptors, proxyCount);
+    websocket::Session* session = container->CreateWebSocket(observer, sessionId, port, [host UTF8String], [customSNI UTF8String], [path UTF8String], method, timeout, proxyDescriptors, proxyCount);
     delete [] proxyDescriptors;
     if (!session) {
         return nil;

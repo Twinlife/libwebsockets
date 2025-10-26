@@ -15,11 +15,12 @@
 #define TL_CONFIG_FIRST_PROXY      0x04 // Start a connection by using the first proxy
 #define TL_CONFIG_KEEP_OTHERS      0x08 // Keep other websocket running even if we are connected
 #define TL_CONFIG_NO_DIRECT        0x10 // Don't make a direct connection
+#define TL_CONFIG_DISABLE_SNI      0x20 // Disable sending the SNI in ClientHello
+#define TL_CONFIG_SNI_PASSTHROUGH  0x40 // Proxy mode in SNI passthrough
+#define TL_CONFIG_SNI_OVERRIDE     0x80 // Override the SNI with a custom value
 
 // #define MAX_PROXIES   32
 // #define NB_SOCKETS    (MAX_PROXIES + 1)
-
-#define TL_CONFIG_SNI_PASSTHROUGH  0x08
 
 typedef NS_ENUM(NSUInteger, TLConnectionError) {
   TLConnectionErrorNone,
@@ -99,7 +100,7 @@ RTC_OBJC_EXPORT
 
 - (void)serviceWithTimeout:(int)timeout;
 
-- (nullable TLWebSocket *)createWithSession:(int64_t)sessionId delegate:(nullable id<TLWebSocketDelegate>)delegate port:(int)port host:(nonnull NSString*)host path:(nullable NSString *)path method:(int)method timeout:(int)timeout proxies:(nullable NSArray<TLSocketProxyDescriptor *> *)proxies;
+- (nullable TLWebSocket *)createWithSession:(int64_t)sessionId delegate:(nullable id<TLWebSocketDelegate>)delegate port:(int)port host:(nonnull NSString*)host customSNI:(nullable NSString *)customSNI path:(nullable NSString *)path method:(int)method timeout:(int)timeout proxies:(nullable NSArray<TLSocketProxyDescriptor *> *)proxies;
 
 - (void)triggerWorker;
 

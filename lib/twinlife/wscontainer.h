@@ -22,11 +22,13 @@ extern "C" {
 #define CONFIG_FIRST_PROXY      0x04 // Start a connection by using the first proxy
 #define CONFIG_KEEP_OTHERS      0x08 // Keep other websocket running even if we are connected
 #define CONFIG_NO_DIRECT        0x10 // Don't make a direct connection
+#define CONFIG_DISABLE_SNI      0x20 // Disable sending the SNI in ClientHello
+#define CONFIG_SNI_PASSTHROUGH  0x40 // Proxy mode in SNI passthrough
+#define CONFIG_SNI_OVERRIDE     0x80 // Override the SNI with a custom value
 
 #define MAX_PROXIES   32
 #define NB_SOCKETS    (MAX_PROXIES + 1)
 
-#define CONFIG_SNI_PASSTHROUGH  0x08
 
 namespace websocket {
 
@@ -199,8 +201,9 @@ namespace websocket {
     ~Container();
 
     // Create a session to connect to the given host:port and with an optional list of proxies.
-    Session* CreateWebSocket(SessionObserver *observer, long sessionId, int port, const char* host, const char* path,
-                             int method, long timeout, const struct ProxyDescriptor *proxies, int proxyCount);
+    Session* CreateWebSocket(SessionObserver *observer, long sessionId, int port, const char* host,
+                             const char* customSNI, const char* path, int method, long timeout,
+                             const struct ProxyDescriptor *proxies, int proxyCount);
 
     void Service(int timeout);
 

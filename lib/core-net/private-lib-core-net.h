@@ -197,6 +197,14 @@ struct lws_peer {
 #define LWS_UNIX_SOCK_ENABLED(vhost) (0)
 #endif
 
+/* --twinlife-- 2025-10-24: add option to disable sending the SNI in the TLS ClientHello */
+#define LWS_CLIENT_TLS_SNI_DISABLED(vhost) \
+	(vhost->options & LWS_CLIENT_TLS_WITHOUT_SNI_EXT)
+
+#define LWS_CLIENT_TLS_SNI_OVERRIDE_ENABLED(vhost) \
+	(vhost->options & LWS_CLIENT_TLS_SNI_OVERRIDE)
+/* --twinlife-- 2025-10-24 */
+
 enum uri_path_states {
 	URIPS_IDLE,
 	URIPS_SEEN_SLASH,
@@ -414,6 +422,9 @@ struct lws_vhost {
 // --twinlife-- 211108
 	char proxy_path[128];
 // --twinlife-- 211108
+// --twinlife-- 2025-10-24: custom override SNI value (only when LWS_CLIENT_TLS_SNI_OVERRIDE_ENABLED)
+        char hostname[128];
+// --twinlife-- 2025-10-24: custom override SNI value
 #if LWS_MAX_SMP > 1
 	struct lws_mutex_refcount		mr;
 	char					close_flow_vs_tsi[LWS_MAX_SMP];
