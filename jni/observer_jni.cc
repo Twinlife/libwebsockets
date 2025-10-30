@@ -21,7 +21,7 @@ Observer::Observer(JNIEnv* jni, jobject j_observer)
     j_on_message_(GetMethodID(jni, *j_observer_class_, "onReceive", "(JLjava/nio/ByteBuffer;Z)V")),
     j_on_close_(GetMethodID(jni, *j_observer_class_, "onClose", "(J)V")),
     j_connection_stats_(jni, jni->FindClass("org/libwebsockets/ConnectionStats")),
-    j_connection_stats_ctor_(jni->GetMethodID(*j_connection_stats_, "<init>", "(IJJJJIIZLjava/lang/String;)V")) {
+    j_connection_stats_ctor_(jni->GetMethodID(*j_connection_stats_, "<init>", "(IIZIJJJJIZLjava/lang/String;)V")) {
 }
 
 Observer::~Observer() {
@@ -38,12 +38,17 @@ jobjectArray Observer::GetConnectionStats(JNIEnv *env, websocket::Session *sessi
     const websocket::ConnectionStats *stats = session->GetStats(i);
     jstring ipAddr = env->NewStringUTF(stats->ip_addr);
 
-    // new ConnectionStats(int index, long dnsTime, long tcpConnectTime, long txnResponseTime,
+    lwsl_notice("Connection stats: proxyIndex=%d connectCount=%d", stats->proxyIndex, stats->connectCount);
+
+    // new ConnectionStats(int index, int proxyIndex, boolean sniOverride, long dnsTime, long tcpConnectTime, long txnResponseTime,
     //                     long tlsConnectTime, int connectCount, int lastError, boolean ipv6, String ipAddr);
-    jobject obj = env->NewObject(*j_connection_stats_, j_connection_stats_ctor_, i, (jlong) stats->dnsTime,
+    jobject obj = env->NewObject(*j_connection_stats_, j_connection_stats_ctor_, (jint) i, (jint) stats->proxyIndex,
+                                 (jboolean) stats->sniOverride, (jint) stats->connectCount,
+				 (jlong) stats->dnsTime,
                                  (jlong) stats->tcpConnectTime, (jlong) stats->txnResponseTime,
-                                 (jlong) stats->tlsConnectTime, (jint) stats->connectCount,
-                                 (jint) stats->lastError, (jboolean) stats->ipv6, ipAddr);
+                                 (jlong) stats->tlsConnectTime, 
+                                 (jint) stats->lastError, (jboolean) stats->ipv6,
+                                 ipAddr);
     env->SetObjectArrayElement(result, i, obj);
     env->DeleteLocalRef(obj);
     env->DeleteLocalRef(ipAddr);

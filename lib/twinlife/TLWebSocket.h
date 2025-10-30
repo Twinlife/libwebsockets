@@ -18,6 +18,7 @@
 #define TL_CONFIG_DISABLE_SNI      0x20 // Disable sending the SNI in ClientHello
 #define TL_CONFIG_SNI_PASSTHROUGH  0x40 // Proxy mode in SNI passthrough
 #define TL_CONFIG_SNI_OVERRIDE     0x80 // Override the SNI with a custom value
+#define TL_CONFIG_TRY_CUSTOM_SNI   0x100 // Try custom SNI override after a delay if direct connect failed
 
 // #define MAX_PROXIES   32
 // #define NB_SOCKETS    (MAX_PROXIES + 1)
@@ -41,6 +42,7 @@ RTC_OBJC_EXPORT
 @interface TLConnectionStats : NSObject
 
 @property (readonly) int index;
+@property (readonly) int proxyIndex;
 @property (readonly) int64_t dnsTime;
 @property (readonly) int64_t tcpConnectTime;
 @property (readonly) int64_t txnResponseTime;
@@ -48,6 +50,7 @@ RTC_OBJC_EXPORT
 @property (readonly) int lastError;
 @property (readonly, nullable) NSString *ipAddr;
 @property (readonly) BOOL ipv6;
+@property (readonly) BOOL sniOverride;
 
 @end
 

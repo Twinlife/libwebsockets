@@ -17,17 +17,18 @@ extern "C" {
 #include <libwebsockets.h>
 }
 
-#define CONFIG_SECURE           0x01 // Use TLS
-#define CONFIG_DIRECT_CONNECT   0x02 // Start a direct connection
-#define CONFIG_FIRST_PROXY      0x04 // Start a connection by using the first proxy
-#define CONFIG_KEEP_OTHERS      0x08 // Keep other websocket running even if we are connected
-#define CONFIG_NO_DIRECT        0x10 // Don't make a direct connection
-#define CONFIG_DISABLE_SNI      0x20 // Disable sending the SNI in ClientHello
-#define CONFIG_SNI_PASSTHROUGH  0x40 // Proxy mode in SNI passthrough
-#define CONFIG_SNI_OVERRIDE     0x80 // Override the SNI with a custom value
+#define CONFIG_SECURE           0x01  // Use TLS
+#define CONFIG_DIRECT_CONNECT   0x02  // Start a direct connection
+#define CONFIG_FIRST_PROXY      0x04  // Start a connection by using the first proxy
+#define CONFIG_KEEP_OTHERS      0x08  // Keep other websocket running even if we are connected
+#define CONFIG_NO_DIRECT        0x10  // Don't make a direct connection
+#define CONFIG_DISABLE_SNI      0x20  // Disable sending the SNI in ClientHello
+#define CONFIG_SNI_PASSTHROUGH  0x40  // Proxy mode in SNI passthrough
+#define CONFIG_SNI_OVERRIDE     0x80  // Override the SNI with a custom value
+#define CONFIG_TRY_CUSTOM_SNI   0x100 // Try custom SNI override after a delay if direct connect failed
 
 #define MAX_PROXIES   32
-#define NB_SOCKETS    (MAX_PROXIES + 1)
+#define NB_SOCKETS    (MAX_PROXIES + 2)
 
 
 namespace websocket {
@@ -61,13 +62,15 @@ namespace websocket {
   // Statistics collected for a specific websocket connection.
   struct ConnectionStats {
     unsigned index;
+    int proxyIndex;
+    int connectCount;
     long dnsTime;
     long tcpConnectTime;
     long tlsConnectTime;
     long txnResponseTime;
-    long connectCount;
     Error lastError;
     bool ipv6;
+    bool sniOverride;
     char ip_addr[INET6_ADDRSTRLEN];
   };
 
@@ -173,6 +176,7 @@ namespace websocket {
     int status_;
     int port_;
     int method_;
+    WebSocket *creating_;
     char* hostname_;
     char* path_;
     struct Packet *packets_;
@@ -185,7 +189,7 @@ namespace websocket {
     ~Session();
 
     // Create a websocket configuration with an optional proxy.
-    void CreateSocket(const struct ProxyDescriptor *proxy);
+    void CreateSocket(const struct ProxyDescriptor *proxy, int proxyIndex);
 
     // Connect the websocket according to its configuration and setup the given timeout.
     int Connect(WebSocket& webSocket, long timeout);

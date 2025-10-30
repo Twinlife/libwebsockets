@@ -74,12 +74,14 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
     self = [super init];
     if (self) {
         _index = stats->index;
+        _proxyIndex = stats->proxyIndex;
 	_dnsTime = stats->dnsTime;
 	_tcpConnectTime = stats->tcpConnectTime;
 	_txnResponseTime = stats->txnResponseTime;
 	_connectCount = stats->connectCount;
 	_lastError = stats->lastError;
 	_ipv6 = stats->ipv6;
+        _sniOverride = stats->sniOverride;
 	if (stats->ip_addr[0]) {
 	    _ipAddr = [NSString stringWithUTF8String:stats->ip_addr];
 	} else {
