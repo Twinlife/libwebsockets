@@ -233,6 +233,10 @@ rtc_library("libwebsockets") {
       "LWS_HAVE_PIPE2",
       "LWS_HAVE_EVENTFD",
     ]
+    include_dirs += [
+      "$java_home/include",
+      "$java_home/include/linux",
+    ]
  }
  deps = [
     "//third_party/boringssl",
