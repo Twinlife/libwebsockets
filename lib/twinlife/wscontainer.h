@@ -55,6 +55,7 @@ namespace websocket {
     NONE,
     CONNECTING,
     CONNECTED,
+    CLOSING,
     CLOSED,
     ERROR
   };
@@ -163,6 +164,9 @@ namespace websocket {
     }
     int GetActiveSocket() {
       return active_;
+    }
+    int GetStatus() {
+      return status_;
     }
   private:
     const long sessionId_;

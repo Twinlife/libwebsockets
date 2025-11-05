@@ -348,7 +348,7 @@ bool Session::SendMessage(const void* buffer, size_t length, bool binary) {
 
   struct lws *wsi;
   pthread_mutex_lock(&lock_);
-  if (active_ >= 0) {
+  if (active_ >= 0 && status_ == CONNECTED) {
     wsi = sockets_[active_].wsi_;
     struct Packet *next = packets_;
     if (!next) {
@@ -377,6 +377,7 @@ bool Session::SendMessage(const void* buffer, size_t length, bool binary) {
 bool Session::Close() {
 
   bool hasWebSocket = false;
+  bool wasClosed;
 
   lwsl_notice("Closing %ld", sessionId_);
 
@@ -390,8 +391,15 @@ bool Session::Close() {
       break;
     }
   }
+  wasClosed = status_ == CLOSED || status_ == CLOSING;
+  if (!wasClosed) {
+    status_ = CLOSING;
+  }
   pthread_mutex_unlock(&lock_);
-  container_.Close(this);
+
+  if (!wasClosed) {
+    container_.Close(this);
+  }
   return hasWebSocket;
 }
 
@@ -404,12 +412,12 @@ void Session::DoClose() {
   lwsl_notice("DoClose %ld wsiCount=%d", sessionId_, wsiCount_);
 
   pthread_mutex_lock(&lock_);
+  status_ = CLOSED;
   for (int i = 0; i < socketCount_; i++) {
     WebSocket& webSocket = sockets_[i];
     struct lws *wsi = webSocket.wsi_;
-    if (wsi) {
+    if (wsi && webSocket.status_ != CLOSED) {
       toClose[closeCount] = wsi;
-      webSocket.wsi_ = nullptr;
       webSocket.status_ = CLOSED;
       closeCount++;
 
@@ -452,10 +460,9 @@ void Session::OnConnect(struct lws *wsi) {
         }
         status_ = CONNECTED;
         webSocket.status_ = CONNECTED;
-      } else if ((method_ & CONFIG_KEEP_OTHERS) == 0) {
+      } else if ((method_ & CONFIG_KEEP_OTHERS) == 0 && (webSocket.status_ != CLOSED && webSocket.status_ != ERROR)) {
         toClose[closeCount] = w;
         closeCount++;
-        webSocket.wsi_ = nullptr;
         webSocket.status_ = CLOSED;
 
         // Mark the suppress error because we don't want the OnConnectError() callback
@@ -467,6 +474,8 @@ void Session::OnConnect(struct lws *wsi) {
     }
   }
   pthread_mutex_unlock(&lock_);
+
+  lwsl_notice("OnConnect %ld.%d wsi %p", sessionId_, active_, wsi);
 
   // Close the other websockets if they are opened.
   for (int i = 0; i < closeCount; i++) {
@@ -551,7 +560,6 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
     WebSocket *webSocket = &sockets_[i];    
     if (webSocket->wsi_ == wsi || webSocket == creating_) {
       // Invalidate this websocket and record the stats.
-      // webSocket->wsi_ = nullptr;
       if (webSocket->stats_.lastError != ERR_NONE) {
         error = webSocket->stats_.lastError;
       }
@@ -570,7 +578,7 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
       }
     } else if (webSocket->wsi_) {
       running++;
-    } else if (webSocket->status_ == NONE) {
+    } else if (webSocket->status_ == NONE && status_ == CONNECTING) {
       webSocket->status_ = CONNECTING;
       toConnect[toConnectCount] = webSocket;
       toConnectCount++;
@@ -636,17 +644,22 @@ void Session::OnReceive(struct lws *wsi, void *in, size_t len) {
 void Session::OnClose(struct lws *wsi) {
 
   int wsiCount = 0;
+  int pos = -1;
   struct Packet *pkt;
 
   pthread_mutex_lock(&lock_);
   for (int i = 0; i < socketCount_; i++) {
     if (sockets_[i].wsi_ == wsi) {
-      //sockets_[i].wsi_ = nullptr;
+      pos = i;
+      if (sockets_[i].status_ != CLOSED) {
+        sockets_[i].status_ = CLOSED;
+      }
     } else if (sockets_[i].wsi_ != nullptr) {
       wsiCount++;
     }
   }
   if (wsiCount == 0) {
+    status_ = CLOSED;
     pkt = packets_;
     packets_ = nullptr;
   } else {
@@ -660,7 +673,7 @@ void Session::OnClose(struct lws *wsi) {
     free(pkt);
     pkt = next;
   }
-  lwsl_notice("%s: OnClose wsi %p\n", __func__, wsi);
+  lwsl_notice("%s: OnClose %ld.%d wsi %p\n", __func__, sessionId_, pos, wsi);
 
   if (wsiCount == 0) {
     observer_.OnClose(this);
@@ -669,17 +682,19 @@ void Session::OnClose(struct lws *wsi) {
 
 void Session::OnDestroy(struct lws *wsi) {
 
+  int pos = -1;
   pthread_mutex_lock(&lock_);
   for (int i = 0; i < socketCount_; i++) {
     if (sockets_[i].wsi_ == wsi) {
       sockets_[i].wsi_ = nullptr;
       wsiCount_--;
+      pos = i;
       break;
     }
   }
   pthread_mutex_unlock(&lock_);
 
-  lwsl_notice("%s: destroy wsi %p remain %d\n", __func__, wsi, wsiCount_);
+  lwsl_notice("%s: %ld.%d destroy wsi %p remain %d\n", __func__, sessionId_, pos, wsi, wsiCount_);
   wsi->a.vhost = NULL;
 
   if (wsiCount_ == 0) {
@@ -731,7 +746,7 @@ int Session::OnVerifyCert(struct lws *wsi, X509_STORE_CTX *x509_store_ctx, int l
         }
 
         if (common_name && bytes && length > 0) {
-          lwsl_notice("Received certificate signed by %s", common_name);
+          lwsl_notice("%ld.%d Received certificate signed by %s", sessionId_, pos, common_name);
 
           // Build the SHA-256 of the public key.
           unsigned int digest_len;
@@ -783,12 +798,12 @@ int Session::OnTimer(struct lws *wsi) {
   lws_usec_t now = lws_now_usecs();
   lws_usec_t delay = now - startTime_;
   lws_usec_t timeout = 0;
-  bool canConnect = delay >= 5000L * 1000L;
   bool expired = false;
   int curIndex = -1;
 
   pthread_mutex_lock(&lock_);
   if (status_ == CONNECTING) {
+    bool canConnect = delay >= 5000L * 1000L;
     if (now > connectDeadlineTime_) {
       expired = true;
       canConnect = false;
@@ -823,7 +838,7 @@ int Session::OnTimer(struct lws *wsi) {
           // We must not do the close ourselves because Close() could be executed when
           // we run the OnConnectError() callback and the wsi will be freed when we returned.
           if (expired) {
-            webSocket->wsi_ = nullptr;
+            webSocket->status_ = ERROR;
           }
         }
       } else if (canConnect && webSocket->status_ == NONE) {
@@ -991,6 +1006,7 @@ void Container::Destroy(Session *session) {
 
 void Container::Close(Session *session) {
 
+  lwsl_notice("%s: closing %ld\n", __func__, session->GetSessionId());
   pthread_mutex_lock(&lock_);
   if (std::find(toClose_.begin(), toClose_.end(), session) == toClose_.end()) {
     toClose_.push_back(session);
