@@ -808,7 +808,6 @@ int Session::OnTimer(struct lws *wsi) {
   WebSocket *toConnect[NB_SOCKETS];
   int toConnectCount = 0;
   lws_usec_t now = lws_now_usecs();
-  lws_usec_t delay = now - startTime_;
   lws_usec_t timeout = 0;
   bool expired = false;
   int curIndex = -1;
@@ -833,24 +832,6 @@ int Session::OnTimer(struct lws *wsi) {
         if (webSocket->wsi_ == wsi) {
           timeout = connectDeadlineTime_ - now;
           curIndex = i;
-
-          // If we reached the 3s delay for the direct websocket and the next websocket is
-          // to try the custom SNI, setup a new delay to be called in 2s (arround at the 5s from the start)
-          // and we start the direct websocket with a custom SNI.
-          /*if (i == 0 && socketCount_ > 1 && (sockets_[1].method_ & CONFIG_TRY_CUSTOM_SNI) != 0) {
-            if (delay < CONNECT_TRY_SNI_TIMEOUT) {
-              timeout = CONNECT_TRY_SNI_TIMEOUT - delay;
-            } else {
-              webSocket = &sockets_[1];
-              if (webSocket->status_ == NONE) {
-                canConnect = false;
-                timeout = CONNECT_FIRST_TIMEOUT - CONNECT_TRY_SNI_TIMEOUT;
-                webSocket->status_ = CONNECTING;
-                toConnect[toConnectCount] = webSocket;
-                toConnectCount++;
-              }
-            }
-            }*/
 
           // If this is the current websocket and it is now expired, we will
           // return -1 to inform the libwebsocket to close and release that wsi connection.
