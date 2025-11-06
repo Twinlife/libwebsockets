@@ -27,6 +27,18 @@ extern "C" {
 #define CONFIG_SNI_OVERRIDE     0x80  // Override the SNI with a custom value
 #define CONFIG_TRY_CUSTOM_SNI   0x100 // Try custom SNI override after a delay if direct connect failed
 
+// Custom delays to start the proxy (10 bits per delay in 8ms increments from 0 to 8184 ms or 0 to 4088 ms)
+#define CONFIG_PROXY_DELAY_MASK        0x003FF000 // Mask for the proxy start delay
+#define CONFIG_FIRST_PROXY_DELAY_MASK  0x7FC00000 // Mask for the first proxy start delay (if CONFIG_FIRST_PROXY)
+#define CONFIG_PROXY_DELAY_SHIFT       12
+#define CONFIG_FIRST_PROXY_DELAY_SHIFT (CONFIG_PROXY_DELAY_SHIFT + 10)
+
+// Conversions for the delay in milliseconds.
+#define TO_PROXY_START_DELAY(V)        ((((V) & CONFIG_PROXY_DELAY_MASK) >> CONFIG_PROXY_DELAY_SHIFT) * 8)
+#define TO_FIRST_PROXY_START_DELAY(V)  ((((V) & CONFIG_FIRST_PROXY_DELAY_MASK) >> CONFIG_FIRST_PROXY_DELAY_SHIFT) * 8)
+#define TO_CONFIG_PROXY_DELAY(T)       ((((T) / 8) << CONFIG_PROXY_DELAY_SHIFT) & CONFIG_PROXY_DELAY_MASK)
+#define TO_CONFIG_FIRST_PROXY_DELAY(T) ((((T) / 8) << CONFIG_FIRST_PROXY_DELAY_SHIFT) & CONFIG_FIRST_PROXY_DELAY_MASK)
+
 #define MAX_PROXIES   32
 #define NB_SOCKETS    (MAX_PROXIES + 2)
 
@@ -193,7 +205,7 @@ namespace websocket {
     ~Session();
 
     // Create a websocket configuration with an optional proxy.
-    void CreateSocket(const struct ProxyDescriptor *proxy, int proxyIndex);
+    void CreateSocket(const struct ProxyDescriptor *proxy, int proxyIndex, long startDelay);
 
     // Connect the websocket according to its configuration and setup the given timeout.
     int Connect(WebSocket& webSocket, long timeout);

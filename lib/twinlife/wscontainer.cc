@@ -200,7 +200,7 @@ Session::Session(Container* container, SessionObserver *observer, long sessionId
   pthread_mutex_init(&lock_, NULL);
 }
 
-void Session::CreateSocket(const struct ProxyDescriptor *proxy, int proxyIndex) {
+void Session::CreateSocket(const struct ProxyDescriptor *proxy, int proxyIndex, long startDelay) {
 
   // Ignore if we have filled all possible sockets.
   if (socketCount_ >= NB_SOCKETS) {
@@ -213,6 +213,7 @@ void Session::CreateSocket(const struct ProxyDescriptor *proxy, int proxyIndex) 
   webSocket.method_ = 0;
   webSocket.stats_.index = socketCount_;
   webSocket.stats_.proxyIndex = proxyIndex;
+  webSocket.startTime_ = startTime_ + startDelay;
   socketCount_++;
 
   struct lws_vhost* vhost = lws_create_vhost(container_.context_, &container_.info_);
@@ -451,7 +452,7 @@ void Session::OnConnect(struct lws *wsi) {
   // Identify the websockets which are still trying to connect to invalidate and close them.
   pthread_mutex_lock(&lock_);
   for (int i = 0; i < socketCount_; i++) {
-    WebSocket& webSocket = sockets_[i];    
+    WebSocket& webSocket = sockets_[i];
     struct lws *w = webSocket.wsi_;
     if (w) {
       if (w == wsi) {
@@ -552,10 +553,13 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
   struct lws_conmon cm;
   WebSocket *toConnect[NB_SOCKETS];
   int failedSocket = -1;
+  lws_usec_t now = lws_now_usecs();
+  lws_usec_t nextDeadline;
 
   lws_conmon_wsi_take(wsi, &cm);
 
   pthread_mutex_lock(&lock_);
+  nextDeadline = connectDeadlineTime_;
   for (int i = 0; i < socketCount_; i++) {
     WebSocket *webSocket = &sockets_[i];    
     if (webSocket->wsi_ == wsi || webSocket == creating_) {
@@ -579,9 +583,13 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
     } else if (webSocket->wsi_) {
       running++;
     } else if (webSocket->status_ == NONE && status_ == CONNECTING) {
-      webSocket->status_ = CONNECTING;
-      toConnect[toConnectCount] = webSocket;
-      toConnectCount++;
+      if (webSocket->startTime_ < now || toConnectCount == 0) {
+        webSocket->status_ = CONNECTING;
+        toConnect[toConnectCount] = webSocket;
+        toConnectCount++;
+      } else if (webSocket->startTime_ < nextDeadline) {
+        nextDeadline = webSocket->startTime_;
+      }
     }
   }
   pthread_mutex_unlock(&lock_);
@@ -593,8 +601,12 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
   lws_conmon_release(&cm);
 
   if (toConnectCount > 0) {
+    long timeout = nextDeadline - now;
+    if (timeout <= 0) {
+      timeout = CONNECT_PROXY_TIMEOUT;
+    }
     for (int i = 0; i < toConnectCount; i++) {
-      Connect(*toConnect[i], CONNECT_PROXY_TIMEOUT);
+      Connect(*toConnect[i], timeout);
     }
 
   } else if (running == 0) {
@@ -803,11 +815,18 @@ int Session::OnTimer(struct lws *wsi) {
 
   pthread_mutex_lock(&lock_);
   if (status_ == CONNECTING) {
-    bool canConnect = delay >= 5000L * 1000L;
+    bool canConnect;
+    lws_usec_t nextDeadline;
+
     if (now > connectDeadlineTime_) {
       expired = true;
       canConnect = false;
+      nextDeadline = now;
+    } else {
+      canConnect = true;
+      nextDeadline = connectDeadlineTime_;
     }
+
     for (int i = 0; i < socketCount_; i++) {
       WebSocket *webSocket = &sockets_[i];
       if (webSocket->wsi_) {
@@ -818,7 +837,7 @@ int Session::OnTimer(struct lws *wsi) {
           // If we reached the 3s delay for the direct websocket and the next websocket is
           // to try the custom SNI, setup a new delay to be called in 2s (arround at the 5s from the start)
           // and we start the direct websocket with a custom SNI.
-          if (i == 0 && socketCount_ > 1 && (sockets_[1].method_ & CONFIG_TRY_CUSTOM_SNI) != 0) {
+          /*if (i == 0 && socketCount_ > 1 && (sockets_[1].method_ & CONFIG_TRY_CUSTOM_SNI) != 0) {
             if (delay < CONNECT_TRY_SNI_TIMEOUT) {
               timeout = CONNECT_TRY_SNI_TIMEOUT - delay;
             } else {
@@ -831,7 +850,7 @@ int Session::OnTimer(struct lws *wsi) {
                 toConnectCount++;
               }
             }
-          }
+            }*/
 
           // If this is the current websocket and it is now expired, we will
           // return -1 to inform the libwebsocket to close and release that wsi connection.
@@ -841,12 +860,15 @@ int Session::OnTimer(struct lws *wsi) {
             webSocket->status_ = ERROR;
           }
         }
-      } else if (canConnect && webSocket->status_ == NONE) {
+      } else if (canConnect && webSocket->status_ == NONE && webSocket->startTime_ < now) {
         webSocket->status_ = CONNECTING;
         toConnect[toConnectCount] = webSocket;
         toConnectCount++;
+      } else if (webSocket->status_ == NONE && webSocket->startTime_ < nextDeadline) {
+        nextDeadline = webSocket->startTime_;
       }
     }
+    timeout = nextDeadline - now;
   } else {
     timeout = 10 * 1000 * 1000;
     curIndex = active_;
@@ -859,7 +881,7 @@ int Session::OnTimer(struct lws *wsi) {
   } else {
     if (toConnectCount > 0) {
       for (int i = 0; i < toConnectCount; i++) {
-        Connect(*toConnect[i], CONNECT_PROXY_TIMEOUT);
+        Connect(*toConnect[i], timeout);
       }
     }
     if (timeout <= 0) {
@@ -942,16 +964,24 @@ Session* Container::CreateWebSocket(SessionObserver *observer, long sessionId, i
     return nullptr;
   }
 
-  session->CreateSocket(nullptr, -1);
+  session->CreateSocket(nullptr, -1, 0);
 
   // Use a custom SNI name for the direct websocket TLS connection.
   // When CONFIG_TRY_CUSTOM_SNI is set, the custom SNI is tried on a second websocket
   // that will be created only if the first websocket fails to connect after some delay.
   int pos = 0;
-  long firstTimeout = CONNECT_FIRST_TIMEOUT;
+  long firstTimeout;
+
+  if ((method & CONFIG_NO_DIRECT) != 0) {
+    session->sockets_[0].status_ = CLOSED;
+    firstTimeout = timeout * 1000L;
+  } else {
+    firstTimeout = CONNECT_FIRST_TIMEOUT;
+  }
+
   if (customSNI) {
     if ((method & CONFIG_TRY_CUSTOM_SNI) != 0) {
-      session->CreateSocket(nullptr, -1);
+      session->CreateSocket(nullptr, -1, CONNECT_TRY_SNI_TIMEOUT);
       session->sockets_[1].method_ |= CONFIG_TRY_CUSTOM_SNI | CONFIG_SNI_OVERRIDE;
       session->sockets_[1].stats_.sniOverride = true;
       pos++;
@@ -967,7 +997,16 @@ Session* Container::CreateWebSocket(SessionObserver *observer, long sessionId, i
     }
   }
   for (int i = 0; i < proxyCount; i++) {
-    session->CreateSocket(&proxies[i], i);
+    long proxyDelay;
+    if (i == 0 && (method & CONFIG_FIRST_PROXY) != 0) {
+      proxyDelay = 10 + TO_FIRST_PROXY_START_DELAY(method) * 1000L;
+    } else {
+      proxyDelay = 10 + TO_PROXY_START_DELAY(method) * 1000L;
+    }
+    if (proxyDelay < firstTimeout) {
+      firstTimeout = proxyDelay;
+    }
+    session->CreateSocket(&proxies[i], i, proxyDelay);
   }
 
   // Start the direct connection if it is enabled.  The first timeout is configured
@@ -975,13 +1014,10 @@ Session* Container::CreateWebSocket(SessionObserver *observer, long sessionId, i
   // connection in 3s.  Otherwise, after 5s the timeout is triggered to try the proxies.
   if ((method & CONFIG_DIRECT_CONNECT) != 0) {
     session->Connect(session->sockets_[0], firstTimeout);
-  } else if ((method & CONFIG_NO_DIRECT) != 0) {
-    session->sockets_[0].status_ = CLOSED;
-  }
 
-  // Start a connection with the first proxy if it is enabled.
-  if ((method & CONFIG_FIRST_PROXY) != 0 && session->socketCount_ > pos + 1) {
-    session->Connect(session->sockets_[pos + 1], CONNECT_FIRST_TIMEOUT);
+    // Start a connection with the first proxy if it is enabled.
+  } else if ((method & CONFIG_FIRST_PROXY) != 0 && session->socketCount_ > pos + 1) {
+    session->Connect(session->sockets_[pos + 1], firstTimeout);
   }
   return session;
 }
