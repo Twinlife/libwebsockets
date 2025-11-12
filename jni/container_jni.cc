@@ -215,7 +215,7 @@ JNI_FUNCTION_DECLARATION(void,
   }
 }
 
-JNI_FUNCTION_DECLARATION(void,
+JNI_FUNCTION_DECLARATION(jboolean,
 			 Session_nativeSendMessage,
 			 JNIEnv* jni,
                          jclass,
@@ -223,15 +223,17 @@ JNI_FUNCTION_DECLARATION(void,
 			 jbyteArray message,
 			 jboolean binary) {
 
+  jboolean result = false;
   jbyte* bytes = jni->GetByteArrayElements(message, nullptr);
   CHECK_EXCEPTION(jni) << "error during GetByteArrayElements";
   if (session_p) {
     websocket::Session *session = reinterpret_cast<websocket::Session*>(session_p);
     size_t length = jni->GetArrayLength(message);
-    session->SendMessage(bytes, length, binary);
+    result = (jboolean) session->SendMessage(bytes, length, binary);
   }
   jni->ReleaseByteArrayElements(message, bytes, JNI_ABORT);
   CHECK_EXCEPTION(jni) << "error during ReleaseByteArrayElements";  
+  return result;
 }
 
 JNI_FUNCTION_DECLARATION(jboolean,
