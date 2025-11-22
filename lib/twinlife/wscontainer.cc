@@ -940,6 +940,10 @@ Session* Container::CreateWebSocket(SessionObserver *observer, long sessionId, i
   if (proxyCount > MAX_PROXIES) {
     proxyCount = MAX_PROXIES;
   }
+
+  // Before creating a new Session() instance, delete previous instances which have been queued for
+  // deleted by OnDestroy().
+  DeleteSessions();
   Session* session = new Session(this, observer, sessionId, port, host, path, method, timeout * 1000L);
   if (!session) {
     return nullptr;
@@ -1010,7 +1014,6 @@ void Container::Service(int timeout) {
     CloseSessions();
     lws_service(context_, timeout);
     CloseSessions();
-    DeleteSessions();
   }
 }
 
