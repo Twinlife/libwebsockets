@@ -22,8 +22,6 @@ RTC_OBJC_EXPORT
 
 @property (nonatomic, nullable) websocket::Session *session;
 
-- (nonnull NSArray<TLConnectionStats *> *)getStats;
-
 @end
 
 RTC_OBJC_EXPORT

@@ -12,6 +12,15 @@
 
 namespace websocket {
 class SessionObserverDelegateAdapter : public websocket::SessionObserver {
+    static NSArray<TLConnectionStats *> *getStats(Session *session) {
+
+        NSMutableArray<TLConnectionStats *> *result = [[NSMutableArray alloc] init];
+        for (int i = 0; i < session->GetSocketCount(); i++) {
+	    [result addObject:[[TLConnectionStats alloc] initWithStats:session->GetStats(i)]];
+	}
+        return result;
+    }
+
   public:
     SessionObserverDelegateAdapter(TLWebSocket *socket) {
         socket_ = socket;
@@ -21,7 +30,7 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 
         TLWebSocket *webSocket = socket_;
 	if (webSocket) {
-	    NSArray<TLConnectionStats *> *stats = [webSocket getStats];
+	    NSArray<TLConnectionStats *> *stats = getStats(session);
             [webSocket.delegate onConnect:webSocket stats:stats active:session->GetActiveSocket()];
 	}
     }
@@ -31,7 +40,7 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
 
         TLWebSocket *webSocket = socket_;
 	if (webSocket) {
-	    NSArray<TLConnectionStats *> *stats = [webSocket getStats];
+	    NSArray<TLConnectionStats *> *stats = getStats(session);
             [webSocket.delegate onConnectError:webSocket stats:stats error:error];
             webSocket.session = nil;
 	}
@@ -143,18 +152,6 @@ class SessionObserverDelegateAdapter : public websocket::SessionObserver {
     self.session = nil;
     lwsl_notice("Close %ld", s ? s->GetSessionId() : -1);
     return s->Close();
-}
-
-- (nonnull NSArray<TLConnectionStats *> *)getStats {
-
-    NSMutableArray<TLConnectionStats *> *result = [[NSMutableArray alloc] init];
-    websocket::Session *s = self.session;
-    if (s) {
-        for (int i = 0; i < s->GetSocketCount(); i++) {
-	    [result addObject:[[TLConnectionStats alloc] initWithStats:s->GetStats(i)]];
-	}
-    }
-    return result;
 }
 
 - (nonnull NSString *)description {
