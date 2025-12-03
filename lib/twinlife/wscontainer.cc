@@ -296,15 +296,18 @@ int Session::Connect(WebSocket& webSocket, long timeout) {
 
   // Mark we are connecting for this websocket.  Be careful that OnConnectError() is sometimes called synchronously from
   // the call below (DNS error), in that case, we don't know the `wsi`, record the webSocket instance being created for
-  // the duration of the call to lws_client_connect_via_info().
+  // the duration of the call to lws_client_connect_via_info().  Because OnConnectError() can create connections, they
+  // could also fail immediately and we must restore the previous creating_ instance.  Furthermore, the OnDestroy() is
+  // also called during that error call flow and we must not delete the Session yet.
+  WebSocket* previousCreating = creating_;
+  creating_ = &webSocket;
   webSocket.status_ = websocket::CONNECTING;
   webSocket.startTime_ = lws_now_usecs();
   webSocket.stats_.connectCount++;
-  creating_ = &webSocket;
 
   struct lws *wsi = lws_client_connect_via_info(&info_ws);
   lwsl_notice("Connecting %ld.%d to %s:%d for host %s as %p", sessionId_, webSocket.stats_.index, info_ws.address, info_ws.port, info_ws.host, wsi);
-  creating_ = nullptr;
+  creating_ = previousCreating;
   webSocket.wsi_ = wsi;
   if (wsi) {
     wsiCount_++;
@@ -609,7 +612,10 @@ int Session::OnConnectError(struct lws *wsi, const char* message, size_t len) {
       Connect(*toConnect[i], timeout);
     }
 
-  } else if (running == 0) {
+  } else if (running == 0 && creating_ == nullptr) {
+    // Call the OnConnectError observer only when we tried every connection and we are done.
+    // But, don't call it if we are still executing the CreateWebSocket() because the websocket::Session
+    // instance is not yet known to the caller.
     observer_.OnConnectError(this, error);
   }
   return -1; // Close this wsi connection.
@@ -709,7 +715,9 @@ void Session::OnDestroy(struct lws *wsi) {
   lwsl_notice("%s: %ld.%d destroy wsi %p remain %d\n", __func__, sessionId_, pos, wsi, wsiCount_);
   wsi->a.vhost = NULL;
 
-  if (wsiCount_ == 0) {
+  // Call Destroy() and the OnDestroy() observer when the last wsi is destroyed,
+  // except if we are being called from Session::Connect().
+  if (wsiCount_ == 0 && creating_ == nullptr) {
     container_.Destroy(this);
     observer_.OnDestroy(this); 
   }
@@ -1003,6 +1011,10 @@ Session* Container::CreateWebSocket(SessionObserver *observer, long sessionId, i
     // Start a connection with the first proxy if it is enabled.
   } else if ((method & CONFIG_FIRST_PROXY) != 0 && session->socketCount_ > pos + 1) {
     session->Connect(session->sockets_[pos + 1], firstTimeout);
+  }
+  if (session->wsiCount_ == 0) {
+    delete session;
+    return nullptr;
   }
   return session;
 }
