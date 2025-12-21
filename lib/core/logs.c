@@ -62,7 +62,7 @@ __lws_lc_tag(struct lws_context *context, lws_lifecycle_group_t *grp,
 		char *cp = strchr(lc->gutag, ']');
 		char rend[96];
 		size_t ll, k;
-		int n;
+		// int n; // --twinlife-- 2025-12-21: fix compilation
 
 		if (!cp)
 			return;

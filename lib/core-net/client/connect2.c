@@ -28,6 +28,9 @@
 #include <netdb.h>
 #endif
 
+// --twinlife-- 2025-12-21: fix compilation
+#pragma clang diagnostic ignored "-Wunreachable-code"
+
 #if !defined(LWS_WITH_SYS_ASYNC_DNS)
 static int
 lws_getaddrinfo46(struct lws *wsi, const char *ads, struct addrinfo **result)

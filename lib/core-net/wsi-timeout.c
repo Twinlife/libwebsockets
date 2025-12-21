@@ -24,6 +24,9 @@
 
 #include "private-lib-core.h"
 
+// --twinlife-- 2025-12-21: fix compilation
+#pragma clang diagnostic ignored "-Wshadow"
+
 void
 __lws_wsi_remove_from_sul(struct lws *wsi)
 {

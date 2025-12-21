@@ -172,7 +172,7 @@ rtc_library("libwebsockets") {
     "lib/roles/raw-proxy/ops-raw-proxy.c",
     "lib/roles/listen/ops-listen.c",
     "lib/roles/http/client/client-http.c",
-    "lib/roles/http/server/server-http.c",
+    # "lib/roles/http/server/server-http.c",
     "lib/event-libs/poll/poll.c",   
     "lib/core-net/client/client.c",
     "lib/core-net/client/conmon.c",
@@ -192,7 +192,7 @@ rtc_library("libwebsockets") {
 #    "lib/core-net/client/sort-dns.c",
 #    "lib/system/async-dns/async-dns.c",
 #    "lib/system/async-dns/async-dns-parse.c",
-]
+  ]
  if (is_ios) {
     sources += [
       "lib/twinlife/TLWebSocket.mm",

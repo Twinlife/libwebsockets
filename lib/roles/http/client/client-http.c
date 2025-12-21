@@ -404,7 +404,7 @@ client_http_body_sent:
 		 */
 		while (wsi->http.ah->parser_state != WSI_PARSING_COMPLETE) {
 			struct lws_tokens eb;
-			int n, m, buffered;
+			int m, buffered; // --twinlife-- 2025-12-21: fix compilation
 
 			eb.token = NULL;
 			eb.len = 0;

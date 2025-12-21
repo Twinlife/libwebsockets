@@ -30,6 +30,9 @@
 
 static const char *library_version = LWS_LIBRARY_VERSION;
 
+// --twinlife-- 2025-12-21: fix compilation
+#pragma clang diagnostic ignored "-Wshadow"
+
 #if defined(LWS_WITH_MBEDTLS)
 extern const char *mbedtls_client_preload_filepath;
 #endif
@@ -2037,7 +2040,7 @@ next:
 #if defined(LWS_WITH_NETWORK)
 
 		for (n = 0; n < context->count_threads; n++) {
-			struct lws_context_per_thread *pt = &context->pt[n];
+                        struct lws_context_per_thread *pt = &context->pt[n];
 
 			(void)pt;
 #if defined(LWS_WITH_SEQUENCER)
