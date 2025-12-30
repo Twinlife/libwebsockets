@@ -91,6 +91,7 @@ rtc_library("libwebsockets") {
     "LWS_HAVE_ATOLL",
     "LWS_HAVE_TLS_CLIENT_METHOD",
     "LWS_HAS_INTPTR_T",
+    "BORINGSSL_NO_CXX"
   ]
   
   include_dirs = [

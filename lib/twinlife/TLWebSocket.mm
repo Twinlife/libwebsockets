@@ -9,6 +9,7 @@
 
 #import "TLWebSocket.mm"
 #import "TLWebSocket+Private.h"
+#include <memory>
 
 namespace websocket {
 class SessionObserverDelegateAdapter : public websocket::SessionObserver {
