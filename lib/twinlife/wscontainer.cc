@@ -185,7 +185,8 @@ Session::Session(Container* container, SessionObserver *observer, long sessionId
     startTime_(lws_now_usecs()),
     connectDeadlineTime_(startTime_ + timeout),
     container_(*container),
-    observer_(*observer)
+    observer_(*observer),
+    creating_(nullptr)
 {
   socketCount_ = 0;
   wsiCount_ = 0;
