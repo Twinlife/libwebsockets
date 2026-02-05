@@ -264,7 +264,8 @@ __lws_free_wsi(struct lws *wsi)
 	lws_sul_debug_zombies(wsi->a.context, wsi, sizeof(*wsi), __func__);
 
 	__lws_lc_untag(wsi->a.context, &wsi->lc);
-	lws_free(wsi);
+        // --twinlife 2026-02-05: defer freeing the lws object.
+	lws_defer_free(wsi);
 }
 
 

@@ -178,3 +178,53 @@ size_t lws_get_allocated_heap(void)
 #endif
 }
 #endif
+
+// --twinlife 2026-02-03: due to our limited multi-threading usage, and issues
+// found in the libwebsocket implementation, there seems to be some memory use
+// after free (this is not proven, but we have a strong doubt about that).
+// As a workarround, for some memory, we defer freeing the 'struct lws' object.
+// This defer free implementation is minimalist and tries to:
+//  - keep a maximum of MAX_DEFER_COUNT object (100),
+//  - defer freeing by at most 10s the free
+// Freeing previous pointers is done at the next call to `lws_defer_free()`.
+// This is only used from `__lws_free_wsi`.  The `struct lws` is arround 1K.
+
+#define MAX_DEFER_COUNT (100)
+#define DEFER_DELAY     (10L*1000L*1000L)
+
+struct lws_defer_list {
+  void *p;
+  lws_usec_t time;
+};
+
+static struct lws_defer_list defer_free[MAX_DEFER_COUNT];
+static int first_pos = 0;
+static int last_pos = -1;
+static int count;
+
+void lws_defer_free(void *p)
+{
+  lws_usec_t now = lws_now_usecs();
+
+  while (count > 0) {
+    struct lws_defer_list *item = &defer_free[first_pos];
+
+    if (count < MAX_DEFER_COUNT && item->time + DEFER_DELAY > now) {
+      break;
+    }
+
+    lwsl_debug("%s: freeing deferred pointer %p (cnt=%d)\n", __func__, item->p, count);
+    lws_free(item->p);
+    item->p = 0;
+    item->time = 0;
+    first_pos = (first_pos + 1) % MAX_DEFER_COUNT;
+    count--;
+  }
+
+  last_pos = (last_pos + 1) % MAX_DEFER_COUNT;
+  struct lws_defer_list *item = &defer_free[last_pos];
+  item->p = p;
+  item->time = now;
+  count++;
+  lwsl_debug("%s: queue pointer to free %p (cnt=%d)\n", __func__, item->p, count);
+}

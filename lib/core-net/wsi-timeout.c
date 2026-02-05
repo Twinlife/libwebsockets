@@ -24,9 +24,6 @@
 
 #include "private-lib-core.h"
 
-// --twinlife-- 2025-12-21: fix compilation
-#pragma clang diagnostic ignored "-Wshadow"
-
 void
 __lws_wsi_remove_from_sul(struct lws *wsi)
 {
@@ -50,7 +47,9 @@ lws_sul_hrtimer_cb(lws_sorted_usec_list_t *sul)
 	if (wsi->a.protocol &&
 	    wsi->a.protocol->callback(wsi, LWS_CALLBACK_TIMER,
 				    wsi->user_space, NULL, 0))
-		__lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS,
+          // --twinlife-- 2026-02-05: we must use lws_close_free_wsi() and not the __lws_close_free_wsi()
+          // to make sure we are freeing the instance by taking the context lock and then the lws lock.
+		lws_close_free_wsi(wsi, LWS_CLOSE_STATUS_NOSTATUS,
 				     "hrtimer cb errored");
 }
 

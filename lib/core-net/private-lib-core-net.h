@@ -29,6 +29,11 @@
 #define _POSIX_C_SOURCE 200112L
 #endif
 
+// --twinlife-- 2026-02-05: ignore some warnings for WebRTC build
+#pragma clang diagnostic ignored "-Wunreachable-code"
+#pragma clang diagnostic ignored "-Wshadow"
+// --twinlife-- 2026-02-05: ignore some warnings for WebRTC build
+
 /*
  * Generic pieces needed to manage muxable stream protocols like h2
  */

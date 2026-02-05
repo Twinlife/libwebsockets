@@ -518,8 +518,11 @@ lws_change_pollfd(struct lws *wsi, int _and, int _or)
 	return ret;
 }
 
-int
-lws_callback_on_writable(struct lws *wsi)
+// --twinlife-- 2026-02-05: protect the lws_callback_on_writable() for concurrent
+// access.  We must take the lws_pt_lock() to make sure the wsi is not deleted by
+// another thread.
+static int
+__lws_callback_on_writable(struct lws *wsi)
 {
 	struct lws *w = wsi;
 
@@ -549,6 +552,21 @@ lws_callback_on_writable(struct lws *wsi)
 	return 1;
 }
 
+int
+lws_callback_on_writable(struct lws *wsi)
+{
+	struct lws_context_per_thread *pt;
+	int ret = 0;
+
+	pt = &wsi->a.context->pt[(int)wsi->tsi];
+
+	lws_pt_lock(pt, __func__);
+	ret = __lws_callback_on_writable(wsi);
+	lws_pt_unlock(pt);
+
+	return ret;
+}
+// --twinlife-- 2026-02-05
 
 /*
  * stitch protocol choice into the vh protocol linked list

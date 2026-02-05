@@ -134,6 +134,7 @@ configure_file(
 add_subdir_include_dirs(core)
 add_subdir_include_dirs(misc)
 add_subdir_include_dirs(system)
+add_subdir_include_dirs(twinlife)
 
 if (LWS_WITH_DRIVERS)
 	add_subdir_include_dirs(drivers)

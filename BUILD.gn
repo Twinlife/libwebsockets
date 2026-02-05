@@ -71,7 +71,7 @@ rtc_library("libwebsockets") {
     "LWS_NO_DAEMONIZE",
     "LWS_IPV6",
     "LWS_WITH_IPV6",
-    "LWS_MAX_SMP=1",
+    "LWS_MAX_SMP=2",
     "LWS_HAVE_OPENSSL_ECDH_H",
     "LWS_HAVE_PTHREAD_H",
     "LWS_HAVE_RSA_SET0_KEY",
@@ -109,8 +109,6 @@ rtc_library("libwebsockets") {
     "lib/event-libs",
     "lib/system/metrics",
     "lib/twinlife",
-    #"$java_home/include",
-    #"$java_home/include/linux",
   ]
     
   sources = [

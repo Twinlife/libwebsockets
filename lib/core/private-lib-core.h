@@ -897,6 +897,9 @@ lws_realloc(void *ptr, size_t size, const char *reason);
 void * LWS_WARN_UNUSED_RESULT
 lws_zalloc(size_t size, const char *reason);
 
+// --twinlife-- defer free as workarround for some issues
+void lws_defer_free(void* ptr);
+
 #ifdef LWS_PLAT_OPTEE
 void *lws_malloc(size_t size, const char *reason);
 void lws_free(void *p);

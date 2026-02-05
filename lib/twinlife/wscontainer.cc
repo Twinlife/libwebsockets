@@ -1,5 +1,5 @@
 /*
- *  Copyright (c) 2018-2025 twinlife SA.
+ *  Copyright (c) 2018-2026 twinlife SA.
  *
  *  All Rights Reserved.
  *  
@@ -1024,7 +1024,6 @@ void Container::Service(int timeout) {
 
   lwsl_debug("%s: service with timeout=%d ms\n", __func__, timeout);
   if (context_) {
-    CloseSessions();
     lws_service(context_, timeout);
     CloseSessions();
   }
