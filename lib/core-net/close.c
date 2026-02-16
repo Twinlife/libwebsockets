@@ -787,10 +787,25 @@ just_kill_connection:
 		if (!wsi->a.protocol && wsi->a.vhost && wsi->a.vhost->protocols)
 			pro = &wsi->a.vhost->protocols[0];
 
-		if (pro)
+		if (pro) {
+                        // --twinlife 2026-02-16: release the lock while we execute the close_cb
+                        // callback to avoid a deadlock due to the OnClose() observer that can
+                        // take another lock: we must make sure the locks are taken in the same
+                        // order which is for us:
+                        //   <application-lock> -> lws_pt_lock()
+                        // By keeping the lws_pt_lock() here, the lock order becomes different
+                        // in particular if the callback has to take the <application-lock>.
+                        struct lws_context_per_thread *pt = &wsi->a.context->pt[(int)wsi->tsi];
+                        lws_pt_unlock(pt);
+                        lwsl_wsi_debug(wsi, "unlock pt before close_cb");
+
 			pro->callback(wsi,
 				wsi->role_ops->close_cb[lwsi_role_server(wsi)],
 				wsi->user_space, NULL, 0);
+                        lwsl_wsi_debug(wsi, "lock pt after close_cb");
+                        lws_pt_lock(pt, __func__);
+                        // --twinlife 2026-02-05: re-acquire the lock before proceeding.
+                }
 		wsi->told_user_closed = 1;
 	}
 
