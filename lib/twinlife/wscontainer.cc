@@ -53,6 +53,9 @@ NAMESPACE
 
 #define BUFFER_SIZE (256 * 1024)
 
+// Maximum size of a message re-assembled from several fragments.
+#define MAX_MESSAGE_SIZE (16 * 1024 * 1024)
+
 #define TCP_KEEP_ALIVE 60
 #define TCP_KEEP_ALIVE_PROBES 6
 #define TCP_KEEP_ALIVE_INTERVAL 10
@@ -332,6 +335,7 @@ Session::~Session() {
       lws_vhost_destroy(sockets_[i].vhost_);
       sockets_[i].vhost_ = nullptr;
     }
+    sockets_[i].ReleaseReceiveBuffer();
   }
   free(hostname_);
   free(path_);
@@ -655,9 +659,80 @@ int Session::OnWritable(struct lws *wsi) {
   return 0;
 }
 
+void WebSocket::ReleaseReceiveBuffer() {
+
+  free(rx_buffer_);
+  rx_buffer_ = nullptr;
+  rx_length_ = 0;
+  rx_size_ = 0;
+  rx_overflow_ = false;
+}
+
 void Session::OnReceive(struct lws *wsi, void *in, size_t len) {
 
-  observer_.OnReceive(this, in, len, lws_frame_is_binary(wsi));
+  // A message is given in several pieces when it is sent in several frames or when a frame
+  // is bigger than the rx buffer: the message is complete with the last piece of the final frame.
+  bool complete = lws_is_final_fragment(wsi) && lws_remaining_packet_payload(wsi) == 0;
+
+  int pos = -1;
+  pthread_mutex_lock(&lock_);
+  for (int i = 0; i < socketCount_; i++) {
+    if (sockets_[i].wsi_ == wsi) {
+      pos = i;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&lock_);
+  if (pos < 0) {
+    if (complete) {
+      observer_.OnReceive(this, in, len, lws_frame_is_binary(wsi));
+    }
+    return;
+  }
+
+  // Nothing to re-assemble: give the message without copying it.
+  WebSocket& webSocket = sockets_[pos];
+  if (complete && webSocket.rx_length_ == 0 && !webSocket.rx_overflow_) {
+    observer_.OnReceive(this, in, len, lws_frame_is_binary(wsi));
+    return;
+  }
+
+  // Drop the pieces of a message which is too big until we get its end.
+  if (!webSocket.rx_overflow_ && webSocket.rx_length_ + len > MAX_MESSAGE_SIZE) {
+    lwsl_err("%s: %ld.%d message too big: %lu", __func__, sessionId_, pos,
+             (unsigned long)(webSocket.rx_length_ + len));
+    webSocket.ReleaseReceiveBuffer();
+    webSocket.rx_overflow_ = true;
+  }
+  if (webSocket.rx_overflow_) {
+    if (complete) {
+      webSocket.ReleaseReceiveBuffer();
+    }
+    return;
+  }
+
+  if (webSocket.rx_length_ + len > webSocket.rx_size_) {
+    size_t size = std::max(webSocket.rx_length_ + len, 2 * webSocket.rx_size_);
+    size = std::max(size, (size_t)BUFFER_SIZE);
+    size = std::min(size, (size_t)MAX_MESSAGE_SIZE);
+    unsigned char *buffer = (unsigned char *)realloc(webSocket.rx_buffer_, size);
+    if (!buffer) {
+      lwsl_err("%s: %ld.%d no memory for message: %lu", __func__, sessionId_, pos, (unsigned long)size);
+      webSocket.ReleaseReceiveBuffer();
+      webSocket.rx_overflow_ = !complete;
+      return;
+    }
+    webSocket.rx_buffer_ = buffer;
+    webSocket.rx_size_ = size;
+  }
+  memcpy(&webSocket.rx_buffer_[webSocket.rx_length_], in, len);
+  webSocket.rx_length_ += len;
+  if (complete) {
+    lwsl_debug("%s: %ld.%d re-assembled message: %lu", __func__, sessionId_, pos,
+               (unsigned long)webSocket.rx_length_);
+    observer_.OnReceive(this, webSocket.rx_buffer_, webSocket.rx_length_, lws_frame_is_binary(wsi));
+    webSocket.rx_length_ = 0;
+  }
 }
 
 void Session::OnClose(struct lws *wsi) {
@@ -673,6 +748,7 @@ void Session::OnClose(struct lws *wsi) {
       if (sockets_[i].status_ != CLOSED) {
         sockets_[i].status_ = CLOSED;
       }
+      sockets_[i].ReleaseReceiveBuffer();
     } else if (sockets_[i].wsi_ != nullptr) {
       wsiCount++;
     }

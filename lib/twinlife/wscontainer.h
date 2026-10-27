@@ -118,9 +118,13 @@ namespace websocket {
     friend class Container;
   private:
     WebSocket() : method_(0), port_(0), status_(NONE), address_(0), proxy_address_(0),
-                  proxy_port_(0), wsi_(0), vhost_(0), root_certificate_verified_(false), startTime_(0) {
+                  proxy_port_(0), wsi_(0), vhost_(0), root_certificate_verified_(false), startTime_(0),
+                  rx_buffer_(0), rx_length_(0), rx_size_(0), rx_overflow_(false) {
       memset(&stats_, 0, sizeof(stats_));
     }
+
+    // Release the buffer used to re-assemble a fragmented message.
+    void ReleaseReceiveBuffer();
 
     int method_;
     int port_;
@@ -133,6 +137,12 @@ namespace websocket {
     bool root_certificate_verified_;
     lws_usec_t startTime_;
     struct ConnectionStats stats_;
+
+    // Message being re-assembled when it is received in several fragments.
+    unsigned char *rx_buffer_;
+    size_t rx_length_;
+    size_t rx_size_;
+    bool rx_overflow_;
   };
 
   struct Packet {
